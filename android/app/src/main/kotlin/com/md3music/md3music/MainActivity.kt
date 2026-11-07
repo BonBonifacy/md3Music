@@ -64,6 +64,7 @@ private object HapticsGate {
 }
 
 class MainActivity : FlutterActivity() {
+    private var downloadPublisher: AudioDownloadPublisher? = null
     private val FLOATING_CHANNEL = "com.md3music.md3music/floating_lyric"
     private val FOLDER_PICKER_CHANNEL = "com.md3music.md3music/folder_picker"
     private val FONT_PICKER_CHANNEL = "com.md3music.md3music/font_picker"
@@ -531,6 +532,7 @@ class MainActivity : FlutterActivity() {
         val configureStartedAt = SystemClock.elapsedRealtime()
         Log.i("StartupTiming", "phase=configure_flutter_engine_enter elapsed_realtime_ms=$configureStartedAt")
         super.configureFlutterEngine(flutterEngine)
+        downloadPublisher = AudioDownloadPublisher(this, flutterEngine.dartExecutor.binaryMessenger)
         Log.i(
             "StartupTiming",
             "phase=configure_flutter_engine_super_complete elapsed_ms=${SystemClock.elapsedRealtime() - configureStartedAt}",
@@ -1586,6 +1588,7 @@ class MainActivity : FlutterActivity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (downloadPublisher?.onActivityResult(requestCode, resultCode, data) == true) return
         if (requestCode == FOLDER_PICKER_REQUEST_CODE) {
             if (resultCode == RESULT_OK && data?.data != null) {
                 val treeUri = data.data!!

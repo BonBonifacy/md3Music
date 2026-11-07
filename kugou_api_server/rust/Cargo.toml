@@ -2,12 +2,14 @@
 name = "kugou_server"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.89"
 
 [lib]
 name = "kugou_server"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+lofty = "=0.25.5"
 tiny_http = "0.12"
 ureq = { version = "2", default-features = false, features = ["tls", "gzip", "json"] }
 md-5 = "0.10"

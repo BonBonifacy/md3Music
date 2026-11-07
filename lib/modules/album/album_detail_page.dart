@@ -2,6 +2,7 @@ import '../../core/layout/adaptive_navigator.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
+import '../download/download_actions.dart';
 import 'package:m3e_core/m3e_core.dart';
 
 import '../../core/theme/app_dimens.dart';
@@ -532,6 +533,11 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
                             surfaceTintColor: Colors.transparent,
                             scrolledUnderElevation: 0,
                             actions: [
+                              IconButton(icon:const Icon(Icons.download_outlined),tooltip:'全部下载',onPressed:()=>startDownload(context,() async {
+                                final result=await KugouApiClient().getAlbumSongsAll(widget.album.id);
+                                if(result==null||!result.isComplete) throw StateError('专辑歌曲列表不完整，请重试');
+                                return result.songs.map((s)=>s.toSong()).toList();
+                              })),
                               if (_songs.isNotEmpty)
                                 IconButton(
                                   icon: Icon(_isSearching ? Icons.close : Icons.search,

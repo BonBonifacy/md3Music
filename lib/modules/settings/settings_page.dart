@@ -10,6 +10,7 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import '../download/download_actions.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../update/release_version.dart';
@@ -1221,6 +1222,7 @@ class _SettingsPageState extends State<SettingsPage>
                       : _closeSection,
                 ),
           title: _buildAppBarTitle(level, category),
+          actions: [IconButton(icon:const Icon(Icons.download_outlined),tooltip:'下载管理',onPressed:()=>openDownloads(context))],
           // 统一对齐规则：设置页内部的一/二/三级页面一律居中；
           // 总览页则按「是否为底部导航栏可直达的一级页面」判定
           centerTitle:

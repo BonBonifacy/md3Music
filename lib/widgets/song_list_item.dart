@@ -4,6 +4,7 @@ import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:m3e_core/m3e_core.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
+import '../modules/download/download_actions.dart';
 
 import '../core/build_flags.dart';
 import '../core/platform_capabilities.dart' show isWindowsDesktop;
@@ -582,6 +583,7 @@ class SongListItem extends StatelessWidget {
                     ),
                   ),
                 // 可选扩展：宿主注入的额外菜单条目（默认无）
+                DownloadSongAction(song: song),
                 ...?SongListItem.extraMenuTilesBuilder?.call(ctx, song),
               ],
             ),

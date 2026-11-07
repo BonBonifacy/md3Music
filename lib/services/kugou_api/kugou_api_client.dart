@@ -18,6 +18,7 @@ import 'comment_send_result.dart';
 import 'favorite_list_paging.dart';
 import 'playlist_track_order.dart' as track_order;
 import '../local_server_lifecycle.dart';
+import '../../core/services/download/download_source_resolver.dart';
 
 /// 一次广告领取（/youth/vip → /youth/v1/ad/play_report）的判定结果。
 enum AdClaimOutcome {
@@ -5272,7 +5273,9 @@ class KugouApiClient {
     // total 异常为 0（服务端未返回）时的兜底页数上限，防止请求风暴。
     const noTotalMaxPages = 50;
     final songs = <KugouSongDetail>[];
+    final seen = <String>{};
     var total = 0;
+    var complete = false;
     for (var page = 1; page <= maxPages; page++) {
       final result = await getAlbumSongs(
         albumId,
@@ -5281,16 +5284,22 @@ class KugouApiClient {
       );
       if (result == null) return null;
       if (page == 1) total = result.total;
-      songs.addAll(result.songs);
+      final before = songs.length;
+      for(final item in result.songs) {
+        final song=item.toSong();
+        if(seen.add('${song.id}:${song.albumAudioId ?? ''}')) songs.add(item);
+      }
+      if(result.songs.isNotEmpty && songs.length==before) break;
       if ((total > 0 && songs.length >= total) ||
-          result.songs.length < pageSize) {
+          (total<=0 && result.songs.length < pageSize)) {
+        complete = true;
         break;
       }
       // total≤0 时无法用 total 判断结尾，靠连续满页推断；
       // 超过兜底上限就停，避免无限翻页。
       if (total <= 0 && page >= noTotalMaxPages) break;
     }
-    return KugouAlbumSongs(songs: songs, total: total);
+    return KugouAlbumSongs(songs: songs, total: total, isComplete: complete);
   }
 
   Future<List<KugouSongDetail>?> getPlaylistTrackAll({
@@ -5431,6 +5440,36 @@ class KugouApiClient {
 
   Future<Map<String, dynamic>?> getKrmAudio(String hash) async {
     return await _get(KugouEndpoints.krmAudio, queryParameters: {'hash': hash});
+  }
+
+  /// Download metadata needs the release identity and raw artwork templates.
+  Future<Map<String, dynamic>?> getDownloadMetadataByAlbumAudioId(String id) =>
+      _get(KugouEndpoints.krmAudio, queryParameters: {
+        'album_audio_id': id,
+        'fields': 'album_info,base,authors.base,audio_info,extra,tags,tagmap',
+      });
+
+  Future<Map<String, dynamic>?> getDownloadAlbumDetail(String id) =>
+      _get(KugouEndpoints.albumDetail, queryParameters: {'id':id});
+
+  Future<Map<String, dynamic>?> getDownloadImages(String hash,{String? albumId,String? albumAudioId}) =>
+      _get(KugouEndpoints.images,queryParameters:{'hash':hash,if(albumId!=null)'album_id':albumId,if(albumAudioId!=null)'album_audio_id':albumAudioId,'count':5});
+
+  /// Complete-source resolution never requests free_part and never accepts a trial fallback.
+  Future<Map<String,dynamic>> resolveSongDownloadUrl(String hash,{
+    required String quality, required bool allowFallback, String? albumId,
+    String? albumAudioId, required CancelToken cancelToken,
+  }) async {
+    final bounded=CancelToken();
+    cancelToken.whenCancel.then((_) {if(!bounded.isCancelled) bounded.cancel('cancelled');});
+    final deadline=Timer(const Duration(seconds:45),()=>bounded.cancel('音源解析超时'));
+    try {
+      return await resolveDownloadSource(qualities:allowFallback?downgradeChain(quality):[quality],rank:qualityRank,vip:hasVipToken,cancel:bounded,
+        request:(q,newEndpoint) async {
+          final response=await _get(newEndpoint?KugouEndpoints.songUrlNew:KugouEndpoints.songUrl,queryParameters:{'hash':hash.toLowerCase(),'quality':q,if(albumId!=null)'album_id':albumId,if(albumAudioId!=null)'album_audio_id':albumAudioId},cancelToken:bounded);
+          return response==null?null:_extractData(response['data']??response);
+        });
+    } finally {deadline.cancel();}
   }
 
   Future<Map<String, dynamic>?> getKmrAudioMv(String hash) async {

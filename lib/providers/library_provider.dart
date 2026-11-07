@@ -54,6 +54,14 @@ class LibraryProvider extends ChangeNotifier {
   bool get hasMusic => _songs.isNotEmpty;
   bool get filterShortAudio => _filterShortAudio;
 
+  /// App-owned downloads need no permission to scan other applications' media.
+  Future<void> registerDownloadedSong(Song song) async {
+    _indexedSongs = [..._indexedSongs.where((s) => s.localPath != song.localPath), song];
+    _rebuildCategories();
+    await _repository.saveSongs(_indexedSongs);
+    notifyListeners();
+  }
+
   void _rebuildCategories() {
     _songs = _repository.filterSongs(
       _indexedSongs,

@@ -123,7 +123,7 @@ if (Test-Path $script:Md3CommonPath) {
 $RepoRoot  = Get-RepoRoot
 $RustDir   = Join-Path $RepoRoot 'kugou_api_server\rust'
 $JniDir    = Join-Path $RepoRoot 'android\app\src\main\jniLibs'
-$Toolchain = 'stable-x86_64-pc-windows-gnu'               # msvc 缺 link.exe，用 GNU toolchain 交叉编译
+$Toolchain = '1.95.0-x86_64-pc-windows-gnu'              # 与 Rust 目录和 CI 固定工具链一致
 # host 侧 C 编译器（编译 build-script 用，如 ring 的 cc-rs）
 # 允许用环境变量覆盖；否则在常见 Dev-Cpp 安装位自动探测（文档路径优先，实际机器可能在别处）
 $HostDir = $null
@@ -156,6 +156,7 @@ $ABIs = @(
     @{ target='aarch64-linux-android';   abi='arm64-v8a';   clang='aarch64-linux-android21-clang';   triple='aarch64-linux-android21' }
     @{ target='armv7-linux-androideabi'; abi='armeabi-v7a'; clang='armv7a-linux-androideabi21-clang'; triple='armv7a-linux-androideabi21' }
     @{ target='x86_64-linux-android';    abi='x86_64';      clang='x86_64-linux-android21-clang';    triple='x86_64-linux-android21' }
+    @{ target='i686-linux-android';      abi='x86';         clang='i686-linux-android21-clang';      triple='i686-linux-android21' }
 )
 
 # ---------- 1. 工具检测 ----------
@@ -246,7 +247,7 @@ if ($needRust) {
         # 链接时显式指定 target（带 API 级别）+ lld，clang 才能定位 sysroot 里的 crt 文件
         $env:RUSTFLAGS = "-C link-arg=--target=$($a.triple) -C link-arg=-fuse-ld=lld"
         Push-Location $RustDir
-        try { Invoke-Native { cargo "+$Toolchain" build --target $a.target --release } }
+        try { Invoke-Native { cargo "+$Toolchain" build --locked --target $a.target --release } }
         finally { Pop-Location }
     }
     Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
@@ -254,7 +255,8 @@ if ($needRust) {
     # 复制 .so 到 jniLibs（x86 按需求跳过）
     Write-Step '更新 jniLibs'
     foreach ($a in $ABIs) {
-        $src = Join-Path $RustDir "target\$($a.target)\release\libkugou_server.so"
+        $cargoOutput = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $RustDir 'target' }
+        $src = Join-Path $cargoOutput "$($a.target)\release\libkugou_server.so"
         $dstDir = Join-Path $JniDir $a.abi
         New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
         Copy-Item $src (Join-Path $dstDir 'libkugou_server.so') -Force

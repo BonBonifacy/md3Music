@@ -9,6 +9,7 @@ import 'package:flutter/scheduler.dart' show SchedulerBinding, SchedulerPhase;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'providers/download_provider.dart';
 import 'package:provider/single_child_widget.dart';
 import 'package:quick_actions/quick_actions.dart';
 
@@ -287,6 +288,10 @@ class MyApp extends StatelessWidget {
         // 云盘上传队列：应用级常驻，页面退出不中断上传
         ChangeNotifierProvider(create: (_) => CloudUploadProvider()),
         ChangeNotifierProvider(create: (_) => KugouProvider()),
+        ChangeNotifierProxyProvider<KugouProvider, DownloadProvider>(
+          create: (context) => DownloadProvider(onDownloaded: context.read<LibraryProvider>().registerDownloadedSong),
+          update: (_, kugou, previous) { final queue=previous!; queue.syncOwner(); return queue; },
+        ),
         // 内容黑名单（歌曲「不感兴趣」/ 歌手「屏蔽」）：登录态/账号变化时清空缓存，
         // 防止跨账号串状态；黑名单接口按 token/userid 作用域，缓存不能跨会话复用。
         ChangeNotifierProxyProvider<KugouProvider, BlacklistProvider>(

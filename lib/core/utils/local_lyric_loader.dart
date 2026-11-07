@@ -107,6 +107,10 @@ class LocalLyricLoader {
   /// （如 TTML XML 声明的 `version="1.0"`）会被截断到第一个 `=`，
   /// 因此 FLAC 内嵌歌词改为手动解析 LYRICS 标签（取第一个 `=` 后完整值）。
   static String? _readEmbeddedLyrics(String filePath) {
+    if (filePath.toLowerCase().endsWith('.mp3')) {
+      final text = _readMp3TextLyrics(filePath);
+      if (text != null && text.isNotEmpty) return text;
+    }
     if (filePath.toLowerCase().endsWith('.flac')) {
       final flacLyrics = _readFlacLyrics(filePath);
       if (flacLyrics != null && flacLyrics.isNotEmpty) return flacLyrics;
@@ -132,6 +136,45 @@ class LocalLyricLoader {
     if (filePath.toLowerCase().endsWith('.mp3')) {
       return _readMp3SyncedLyrics(filePath);
     }
+    return null;
+  }
+
+  /// Seek over APIC and unrelated frames instead of buffering the whole ID3 tag.
+  static String? _readMp3TextLyrics(String path) {
+    RandomAccessFile? file;
+    try {
+      file=File(path).openSync();final length=file.lengthSync();
+      final head=file.readSync(10);
+      if(head.length!=10 || String.fromCharCodes(head.take(3))!='ID3' || ![3,4].contains(head[3]) || (head[5]&0x80)!=0) return null;
+      final version=head[3], end=10+_readSynchsafeInt(head,6);
+      if(end>length) return null;
+      if((head[5]&0x40)!=0) {
+        final size=file.readSync(4);if(size.length!=4) return null;
+        final skip=version==4?_readSynchsafeInt(size,0):4+_readUint32Be(size,0);
+        if(skip<4 || 10+skip>end) return null;
+        file.setPositionSync(10+skip);
+      }
+      for(var frames=0;frames<16384 && file.positionSync()+10<=end;frames++) {
+        final header=file.readSync(10);if(header.length!=10 || header[0]==0) break;
+        final id=String.fromCharCodes(header.take(4));
+        if(!RegExp(r'^[A-Z0-9]{4}$').hasMatch(id)) return null;
+        final size=version==4?_readSynchsafeInt(header,4):_readUint32Be(header,4);
+        final next=file.positionSync()+size;
+        if(size<=0 || next>end) return null;
+        if(id=='USLT' && size<=1024*1024+4096 && (header[9]&0x0c)==0) {
+          List<int> payload=file.readSync(size);
+          if(version==4 && (header[9]&0x02)!=0) payload=_removeId3Unsynchronization(payload);
+          if(payload.length<5 || payload[0]>3) continue;
+          var start=4;
+          final separator=_findSyltTerminator(payload,start,payload[0]);
+          if(separator<0) continue;
+          start=separator+_syltTerminatorLength(payload[0]);
+          final text=_decodeSyltText(payload,start,payload.length,payload[0]);
+          if(text.trim().isNotEmpty) return text;
+        }
+        file.setPositionSync(next);
+      }
+    } catch (_) {} finally {file?.closeSync();}
     return null;
   }
 
@@ -359,64 +402,35 @@ class LocalLyricLoader {
   /// FLAC metadata block：1 字节头（last 标志 + block type）+ 3 字节大端长度；
   /// block type 4 = VORBIS_COMMENT，内部为小端长度 + UTF-8 字符串的序列。
   static String? _readFlacLyrics(String filePath) {
-    RandomAccessFile? rf;
+    RandomAccessFile? file;
     try {
-      final file = File(filePath);
-      if (!file.existsSync()) return null;
-      // 只读起始 metadata 区域，避免一次性读入整首大文件（FLAC metadata block
-      // 总在音频帧之前），播放大体积内嵌歌词歌曲时不会触发 OOM/ANR。
-      rf = file.openSync();
-      final fileLen = rf.lengthSync();
-      final bytes = rf.readSync(
-        fileLen > _maxEmbeddedReadBytes ? _maxEmbeddedReadBytes : fileLen,
-      );
-      final data = ByteData.sublistView(bytes);
-      if (bytes.length < 4 ||
-          String.fromCharCodes(bytes.sublist(0, 4)) != 'fLaC') {
-        return null;
-      }
-
-      var offset = 4;
-      while (offset + 4 <= bytes.length) {
-        final header = data.getUint8(offset);
-        final isLast = (header & 0x80) != 0;
-        final type = header & 0x7F;
-        final blockLen = (data.getUint8(offset + 1) << 16) |
-            (data.getUint8(offset + 2) << 8) |
-            data.getUint8(offset + 3);
-        offset += 4;
-
-        if (type == 4) {
-          // VORBIS_COMMENT：vendor length + vendor + comment count + comments
-          if (offset + 4 > bytes.length) return null;
-          final vendorLen = data.getUint32(offset, Endian.little);
-          var p = offset + 4 + vendorLen;
-          if (p + 4 > bytes.length) return null;
-          final count = data.getUint32(p, Endian.little);
-          p += 4;
-          for (var i = 0; i < count; i++) {
-            if (p + 4 > bytes.length) return null;
-            final clen = data.getUint32(p, Endian.little);
-            p += 4;
-            if (p + clen > bytes.length) return null;
-            final comment = utf8.decode(bytes.sublist(p, p + clen));
-            p += clen;
-            // 取第一个 `=` 之后的所有内容作为值（与 OGG 解析器一致）
-            final eq = comment.indexOf('=');
-            if (eq > 0 && comment.substring(0, eq).toUpperCase() == 'LYRICS') {
-              return comment.substring(eq + 1);
+      file=File(filePath).openSync();
+      final length=file.lengthSync();
+      if(String.fromCharCodes(file.readSync(4))!='fLaC') return null;
+      int uint32() {final b=file!.readSync(4);if(b.length!=4) throw const FormatException('truncated comment');return ByteData.sublistView(b).getUint32(0,Endian.little);}
+      for(var blocks=0;blocks<4096 && file.positionSync()+4<=length;blocks++) {
+        final h=file.readSync(4);if(h.length!=4) return null;
+        final end=file.positionSync()+(h[1]<<16)+(h[2]<<8)+h[3];
+        if(end>length) return null;
+        if((h[0]&0x7f)==4) {
+          final vendor=uint32();if(file.positionSync()+vendor+4>end) return null;
+          file.setPositionSync(file.positionSync()+vendor);
+          final count=uint32();if(count>1000000) return null;
+          for(var i=0;i<count;i++) {
+            final size=uint32(),next=file.positionSync()+size;
+            if(next>end) return null;
+            if(size<=1024*1024+128) {
+              final comment=utf8.decode(file.readSync(size));final eq=comment.indexOf('=');
+              if(eq>0 && comment.substring(0,eq).toUpperCase()=='LYRICS') return comment.substring(eq+1);
             }
+            file.setPositionSync(next);
           }
           return null;
         }
-
-        offset += blockLen;
-        if (isLast) break;
+        file.setPositionSync(end);
+        if((h[0]&0x80)!=0) break;
       }
-    } catch (_) {}
-    finally {
-      rf?.closeSync();
-    }
+    } catch (_) {} finally {file?.closeSync();}
     return null;
   }
 

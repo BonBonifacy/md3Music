@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
+import '../download/download_actions.dart';
 import 'package:m3e_core/m3e_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -1670,6 +1671,12 @@ class _PlaylistPageState extends State<PlaylistPage> {
       actions: [
         // 可选扩展：宿主注入的额外操作按钮（默认无）
         ...?PlaylistPage.extraAppBarActionsBuilder?.call(context),
+        IconButton(icon:const Icon(Icons.download_outlined),tooltip:'全部下载',onPressed:()=>startDownload(context,() async {
+          final result=await PlaylistSongsLoader.fetchDetached(widget.playlist,isInMyFavorites:widget.isInMyFavorites,isAlbum:widget.isAlbum,albumId:widget.isAlbum?widget.playlist.id:null);
+          if(!result.apiSucceeded||!result.isComplete) throw StateError('歌曲列表不完整，请重试');
+          return result.songs;
+        })),
+        IconButton(icon:const Icon(Icons.downloading),tooltip:'下载管理',onPressed:()=>openDownloads(context)),
         if (showTrackOrder)
           IconButton(
             tooltip: _sortBy != PlaylistSongSort.time
@@ -2144,6 +2151,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
                 tooltip: allSelected ? '取消全选' : '全选',
               ),
               // 可选扩展：宿主注入的额外操作按钮（默认无）
+              IconButton(icon:const Icon(Icons.download_outlined),tooltip:'下载所选',onPressed:selectedCount==0?null:()=>startDownload(context,() async=>List<Song>.of(_displaySongs.where((s)=>_selectedSongIds.contains(s.id))))),
               ...?PlaylistPage.extraMultiSelectActions?.call(
                 context,
                 colorScheme,

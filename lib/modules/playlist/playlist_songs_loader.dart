@@ -1,10 +1,8 @@
 import 'package:flutter/widgets.dart';
-import 'package:provider/provider.dart';
 
 import '../../data/models/playlist.dart';
 import '../../data/models/song.dart';
 import '../../data/repositories/favorite_lists_cache.dart';
-import '../../providers/kugou_provider.dart';
 import '../../services/kugou_api/kugou_api_client.dart';
 import '../../utils/playlist_song_sort.dart';
 
@@ -62,85 +60,79 @@ class PlaylistSongsLoader {
     bool isAlbum = false,
     String? albumId,
   }) async {
-    final api = KugouApiClient();
-    final isLoggedIn = api.isLoggedIn;
-    final fetchListid = playlist.subscribedListId ?? playlist.listCreateListid;
-
-    List<Song> all = [];
-    bool apiSucceeded = false;
-    bool isComplete = true;
-
-    if (isAlbum) {
-      if (albumId != null && albumId.isNotEmpty) {
-        final result = await api.getAlbumSongsAll(albumId);
-        if (result != null) {
-          all = result.songs.map((song) => song.toSong()).toList();
-          apiSucceeded = true;
-        }
-      }
-    } else if (isLoggedIn && fetchListid != null && fetchListid.isNotEmpty) {
-      const int pageSize = 200;
-      const int maxSongs = 9999;
-      const int maxPages = (maxSongs + pageSize - 1) ~/ pageSize;
-      for (int page = 1; page <= maxPages; page++) {
-        final r = await api.getPlaylistSongsByListid(
-          listid: fetchListid,
-          page: page,
-          pagesize: pageSize,
-          noCache: true,
-        );
-        if (r == null) {
-          // 中途某页失败：已有部分数据时标记不完整（而非静默当完整结果）
-          if (page > 1) isComplete = false;
-          break;
-        }
-        apiSucceeded = true;
-        final batch = r.songs.map((s) => s.toSong()).toList();
-        all.addAll(batch);
-        if (all.length >= maxSongs) {
-          all = all.sublist(0, maxSongs);
-          break;
-        }
-        if (batch.length < pageSize) break;
-      }
-      // listid 拉不到时回退原始歌单的 global_collection_id
-      final fallbackGid = playlist.listCreateGid ??
-          (playlist.listCreateListid != null ? null : playlist.id);
-      if (all.isEmpty && fallbackGid != null && fallbackGid.isNotEmpty) {
-        if (!context.mounted) {
-          return PlaylistSongsResult(all, apiSucceeded);
-        }
-        final kugou = context.read<KugouProvider>();
-        await kugou.getPlaylistTrackAll(id: fallbackGid, forceRefresh: true);
-        all = kugou.currentPlaylistSongs.map((e) => e.toSong()).toList();
-        if (all.isNotEmpty) apiSucceeded = true;
-      }
-    } else if (playlist.id.isNotEmpty) {
-      if (!context.mounted) {
-        return PlaylistSongsResult(all, apiSucceeded);
-      }
-      final kugou = context.read<KugouProvider>();
-      await kugou.getPlaylistTrackAll(id: playlist.id, forceRefresh: true);
-      all = kugou.currentPlaylistSongs.map((e) => e.toSong()).toList();
-      if (all.isNotEmpty) apiSucceeded = true;
-    }
-
-    // 只过滤标题为空的歌曲；保留时长未知（duration=0）的歌曲
-    final filtered = sortSongsByPlaylistPosition(all
-        .where((song) => song.title.isNotEmpty && song.title != '-')
-        .toList());
-
-    // 部分数据不写缓存：避免残缺列表覆盖旧的全量缓存（断网重进会更残缺）。
-    if (apiSucceeded && isComplete && filtered.isNotEmpty) {
-      final key = cacheKey(playlist, isInMyFavorites: isInMyFavorites);
-      if (key != null) {
-        FavoriteListsCache.savePlaylistSongs(key, filtered);
-      }
-    }
-    return PlaylistSongsResult(
-      filtered,
-      apiSucceeded,
-      isComplete: isComplete,
+    return fetchDetached(
+      playlist,
+      isInMyFavorites: isInMyFavorites,
+      isAlbum: isAlbum,
+      albumId: albumId,
     );
+  }
+
+  /// Shared complete pagination, independent of a page or BuildContext lifetime.
+  static Future<PlaylistSongsResult> fetchDetached(
+    Playlist playlist, {
+    bool isInMyFavorites = true,
+    bool isAlbum = false,
+    String? albumId,
+    KugouApiClient? client,
+  }) async {
+    final api = client ?? KugouApiClient();
+    final songs = <Song>[];
+    final seen = <String>{};
+    bool succeeded = false, complete = false;
+    if (isAlbum) {
+      final result = await api.getAlbumSongsAll(albumId ?? playlist.id);
+      if (result != null) {
+        songs.addAll(result.songs.map((s) => s.toSong()));
+        succeeded = true;
+        complete = result.isComplete;
+      }
+    } else {
+      final listid = playlist.subscribedListId ?? playlist.listCreateListid;
+      final gid = playlist.listCreateGid ?? playlist.id;
+      var useListId = api.isLoggedIn && listid != null && listid.isNotEmpty;
+      const size = 200;
+      for (var page = 1; page <= 100; page++) {
+        var result = useListId
+            ? await api.getPlaylistTrackAllNew(
+                listid: listid!,
+                page: page,
+                pagesize: size,
+              )
+            : await api.getPlaylistTrackAll(
+                id: gid,
+                page: page,
+                pagesize: size,
+              );
+        if(page==1 && useListId && (result==null || result.isEmpty) && gid.isNotEmpty &&
+            (playlist.listCreateGid!=null || playlist.listCreateListid==null)) {
+          useListId=false;
+          result=await api.getPlaylistTrackAll(id:gid,page:page,pagesize:size);
+        }
+        if (result == null) break;
+        succeeded = true;
+        final before = songs.length;
+        for (final item in result) {
+          final song = item.toSong();
+          if (seen.add('${song.id}:${song.albumAudioId ?? ""}'))
+            songs.add(song);
+        }
+        if (songs.length > 9999) break;
+        if (result.length < size) {
+          complete = playlist.songCount<=0 || songs.length>=playlist.songCount;
+          break;
+        }
+        if (songs.length == before) break;
+      }
+    }
+    final filtered = sortSongsByPlaylistPosition(
+      songs.where((s) => s.title.isNotEmpty && s.title != '-').toList(),
+    );
+    if (succeeded && complete && filtered.isNotEmpty) {
+      final key = cacheKey(playlist, isInMyFavorites: isInMyFavorites);
+      if (key != null)
+        await FavoriteListsCache.savePlaylistSongs(key, filtered);
+    }
+    return PlaylistSongsResult(filtered, succeeded, isComplete: complete);
   }
 }

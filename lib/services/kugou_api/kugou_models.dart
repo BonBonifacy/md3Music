@@ -1749,8 +1749,9 @@ class KugouAlbumDetail {
 class KugouAlbumSongs {
   final List<KugouSongDetail> songs;
   final int total;
+  final bool isComplete;
 
-  const KugouAlbumSongs({this.songs = const [], this.total = 0});
+  const KugouAlbumSongs({this.songs = const [], this.total = 0, this.isComplete = true});
 
   factory KugouAlbumSongs.fromJson(Map<String, dynamic> json) {
     final data = json['data'] as Map<String, dynamic>? ?? json;

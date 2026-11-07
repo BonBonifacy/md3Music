@@ -28,6 +28,8 @@ jobs:
       # 2. Rust 工具链（windows-latest 上用 MSVC，无需 NDK / GNU toolchain）
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.95.0
 
       # 3. Flutter（与现有 CI 一致）
       - name: Set up Flutter

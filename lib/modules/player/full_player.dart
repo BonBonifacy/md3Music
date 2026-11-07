@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:m3e_core/m3e_core.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import '../download/download_actions.dart';
 
 import '../../core/build_flags.dart';
 import '../../core/platform_capabilities.dart';
@@ -4787,6 +4788,7 @@ class _FullPlayerState extends State<FullPlayer>
               mainAxisSize: MainAxisSize.min,
               children: [
                 // Windows 播放页没有标题栏：窗口操作收在这里，避免挤占顶栏尾部。
+                DownloadSongAction(song: song),
                 if (isWindowsDesktop) ...[
                   ListTile(
                     leading: const Icon(Icons.minimize),

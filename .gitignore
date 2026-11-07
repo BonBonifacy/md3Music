@@ -1,0 +1,93 @@
+# Flutter / Dart 缓存与构建产物
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub/
+.pub-cache/
+build/
+coverage/
+/doc/api/
+*.symbols
+*.dSYM/
+
+# Rust 构建产物（保留 Cargo.lock 和已提交的 Android jniLibs）
+target/
+
+# Android 本机配置、缓存、安装包与签名密钥
+.gradle/
+.kotlin/
+.cxx/
+/android/local.properties
+/android/captures/
+/android/app/debug/
+/android/app/profile/
+/android/app/release/
+*.apk
+*.apk.sha1
+*.apk.sha256
+*.aab
+*.ap_
+key.properties
+keystore.properties
+*.jks
+*.keystore
+
+# Windows / Flutter 生成目录与 IDE 私有状态
+/windows/flutter/ephemeral/
+.vs/
+.idea/
+*.iml
+*.ipr
+*.iws
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.code-workspace
+.history/
+
+# VS Code 保留可共享的扩展、调试和任务配置
+/.vscode/*
+!/.vscode/extensions.json
+!/.vscode/launch.json
+!/.vscode/tasks.json
+!/.vscode/*.code-snippets
+
+# 本地工具、导出与临时目录
+/.tooling/
+/artifacts/
+/dist/
+/tmp/
+/temp/
+/.md3/
+*.fastimport
+
+# 本地环境变量（允许提交不含密钥的配置模板）
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Python 辅助脚本缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 日志、编辑器备份与系统文件
+*.log
+*.log.*
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 应用与后端锁文件应随源码提交
+!/pubspec.lock
+!/kugou_api_server/rust/Cargo.lock

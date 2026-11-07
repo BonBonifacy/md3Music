@@ -8,6 +8,7 @@
 //!  - 纯 C FFI：start_server / stop_server / is_server_running / get_server_port
 
 pub mod cache;
+pub mod audio_tags;
 pub mod config;
 pub mod crypto;
 pub mod device;
