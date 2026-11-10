@@ -89,6 +89,11 @@ class AudioPlaybackService : Service() {
         const val EXTRA_IS_FAVORITED = "isFavorited"
         const val EXTRA_BT_LYRIC_TEXT = "btLyricText"
         const val EXTRA_BT_LYRIC_ENABLED = "btLyricEnabled"
+        // 适配 CarWith：车机投屏逐句歌词通道（小米 CarWith / Jovi InCar）。
+        // 名字逐字锁定：成品验收按字符串常量在 classes.dex 里回读这些串。
+        const val ACTION_UPDATE_CAR_LYRIC = "com.md3music.md3music.ACTION_UPDATE_CAR_LYRIC"
+        const val EXTRA_CAR_LYRIC_TEXT = "carLyricText"
+        const val EXTRA_CAR_LYRIC_ENABLED = "carLyricEnabled"
         // LyricInfo 歌词转发：通过 MediaSession 元数据 extras.lyricInfo 发布整首歌词
         const val ACTION_UPDATE_LYRIC_INFO = "com.md3music.md3music.ACTION_UPDATE_LYRIC_INFO"
         const val EXTRA_LYRIC_INFO = "lyricInfo"
@@ -1465,6 +1470,14 @@ class AudioPlaybackService : Service() {
                 refreshMetadata()
                 return START_STICKY
             }
+            // 适配 CarWith：车机投屏逐句歌词（前台 MainActivity / headless 通道都汇到这里）。
+            ACTION_UPDATE_CAR_LYRIC -> {
+                applyCarWithLyricLine(
+                    intent?.getStringExtra(EXTRA_CAR_LYRIC_TEXT) ?: "",
+                    intent?.getBooleanExtra(EXTRA_CAR_LYRIC_ENABLED, false) ?: false,
+                )
+                return START_STICKY
+            }
             ACTION_UPDATE_LYRIC_INFO -> {
                 applyLyricInfoUpdate(
                     intent?.getStringExtra(EXTRA_LYRIC_INFO) ?: "",
@@ -2256,6 +2269,15 @@ class AudioPlaybackService : Service() {
                         refreshMetadata()
                         result.success(true)
                     }
+                    // 适配 CarWith：车机投屏逐句歌词——headless 无 Activity，不过 Intent，
+                    // 直接进程内调同一落点（与前台 MainActivity→ACTION 路径行为一致）。
+                    "updateCarWithLyricLine" -> {
+                        applyCarWithLyricLine(
+                            call.argument<String>("lyric") ?: "",
+                            call.argument<Boolean>("enabled") ?: false,
+                        )
+                        result.success(true)
+                    }
                     // 锁屏歌词：开关 / 数据推送（正常启动走 MainActivity，headless 在此兜底）
                     "showLockScreenLyric" -> {
                         result.success(true)
@@ -2405,6 +2427,9 @@ class AudioPlaybackService : Service() {
             registerLyriconChannel(engine)
             // SuperLyric channel 原生 handler 同样只能在 headless 场景下在此注册
             registerSuperLyricChannel(engine)
+            // 适配 CarWith：headless 引擎同样要能读连接态/车机深浅色（主题跟随、
+            // 歌词心跳都靠 Dart 侧这条通道取快照），与 MainActivity 用同一注册函数。
+            CarWithState.register(engine, applicationContext)
             // 魅族状态栏歌词：headless 引擎同样需要，否则后台切歌时收不到歌词行推送
             FlymeLyricBridge.registerChannel(engine, applicationContext)
             restoreLyriconStateIfNeeded()
@@ -3045,6 +3070,30 @@ class AudioPlaybackService : Service() {
         if (btLyricRewriteActive())
             (if (originalArtist.isNotEmpty()) "$originalArtist - $originalTitle" else originalTitle)
         else originalArtist
+
+    /// 适配 CarWith：车机投屏逐句歌词的原生落点（前台 Intent 与 headless 通道共用）。
+    ///
+    /// 三步：
+    ///   1) **现读**一次连接态并刷新 vendored 门控位 AudioPlayer.sCarWithConnected——
+    ///      Dart 心跳有 2 秒窗口，连/断瞬间歌词推送必须以自己的读数为准；
+    ///   2) 把歌词行交给 vendored 层（ucar 三条歌词键的写入/清除都在里面）；
+    ///   3) 复用既有 300ms 合并窗口排期一次元数据刷新。
+    ///
+    /// 关开关（enabled=false）同样走完三步、text 传空串：车机歌词要**收掉**
+    /// 而不是停在最后一句；连接态已翻转时 vendored 层会按门控清掉连着时写过的键。
+    /// 不判 connected 再转发：车机侧行为全部由门控位在 vendored 层把关，
+    /// 这里再判一次反而会在「读数滞后翻转」时漏掉那次必须发出的清除提交。
+    private fun applyCarWithLyricLine(text: String, enabled: Boolean) {
+        // 1) 门控刷新（snapshot 内部全程兜底，失败即 connected=false）
+        CarWithState.snapshot(applicationContext)
+        // 2) 歌词行交给 vendored 层——必须在排期之前：合并窗口到期执行
+        //    performMetadataRefresh 时读的就是这里刚写入的静态位。
+        //    关开关时不采信 Dart 随句推来的文本，原生侧强制空串，保证车机收到的是
+        //    「清除」而不是「最后一句挂成整首」。
+        runCatching { AudioPlayer.updateCarLyricLine(enabled, if (enabled) text else "") }
+        // 3) 复用蓝牙歌词同款合并窗口，窗口内多次推句只刷一次元数据
+        scheduleMetadataRefresh()
+    }
 
     /// 蓝牙歌词轻量刷新：歌词行变化或开关切换时，复用缓存的 bitmap 和播放状态
     /// 重建通知和 MediaSession 元数据，不重新下载封面。

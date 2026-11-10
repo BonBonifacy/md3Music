@@ -1028,11 +1028,15 @@ void main() {
       );
     });
 
-    test('fixed 模式未显式传阈值 → 取偏好默认 1000', () {
+    test('fixed 模式未显式传阈值 → 取当前偏好字段初值（平台默认）', () {
+      // resolveThresholdMs 读取 instance.glowFixedThresholdMs；字段初值已是
+      // defaultGlowFixedThresholdMsForCurrentPlatform，无需 load/reset。
       expect(
         EmphasizeEffect.resolveThresholdMs(mode: GlowThresholdMode.fixed),
-        LyricPreferences.defaultGlowFixedThresholdMs,
+        LyricPreferences.instance.glowFixedThresholdMs.round(),
       );
+      // 全局基线常量保持 1000；Windows 便携版当前平台默认单独用
+      // defaultGlowFixedThresholdMsForCurrentPlatform（500）。
       expect(LyricPreferences.defaultGlowFixedThresholdMs, 1000);
     });
 

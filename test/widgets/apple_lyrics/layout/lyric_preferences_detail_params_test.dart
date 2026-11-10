@@ -5,8 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// LyricPreferences「已播字上浮高度」参数的单元测试。
 ///
 /// 锁定三件事：
-/// 1. 默认值按平台区分（Windows 2.5px，其他平台 3.0px）；
-/// 2. 越界输入被 clamp 到声明范围；
+/// 1. 默认值按平台生效（ForCurrentPlatform）；
+/// 2. 越界输入被 clamp 到当前平台范围；
 /// 3. setter 落盘到约定的 SharedPreferences key（改名会静默丢用户设置）。
 void main() {
   setUp(() {
@@ -20,27 +20,33 @@ void main() {
           equals(LyricPreferences.defaultLiftHeightPxForCurrentPlatform));
     });
 
-    test('setter 生效并 clamp 到 [0.0, 10.0]', () async {
-      await LyricPreferences.instance.setLiftHeightPx(6.5);
-      expect(LyricPreferences.instance.liftHeightPx, equals(6.5));
+    test('setter 生效并 clamp 到当前平台范围', () async {
+      final mid = (LyricPreferences.minLiftHeightPxForCurrentPlatform +
+              LyricPreferences.maxLiftHeightPxForCurrentPlatform) /
+          2;
+      await LyricPreferences.instance.setLiftHeightPx(mid);
+      expect(LyricPreferences.instance.liftHeightPx, closeTo(mid, 1e-9));
 
       await LyricPreferences.instance.setLiftHeightPx(999);
       expect(LyricPreferences.instance.liftHeightPx,
-          equals(LyricPreferences.maxLiftHeightPx));
+          equals(LyricPreferences.maxLiftHeightPxForCurrentPlatform));
 
       await LyricPreferences.instance.setLiftHeightPx(-5);
       expect(LyricPreferences.instance.liftHeightPx,
-          equals(LyricPreferences.minLiftHeightPx));
+          equals(LyricPreferences.minLiftHeightPxForCurrentPlatform));
     });
 
     test('持久化到 lyric_lift_height_px', () async {
-      await LyricPreferences.instance.setLiftHeightPx(4.5);
+      // 取上沿（不等于默认值），避免同值早退导致未落盘
+      final target = LyricPreferences.maxLiftHeightPxForCurrentPlatform;
+      await LyricPreferences.instance.setLiftHeightPx(target);
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getDouble('lyric_lift_height_px'), equals(4.5));
+      expect(prefs.getDouble('lyric_lift_height_px'), closeTo(target, 1e-9));
     });
 
     test('reset 后回到默认值且 key 被移除', () async {
-      await LyricPreferences.instance.setLiftHeightPx(9);
+      await LyricPreferences.instance.setLiftHeightPx(
+          LyricPreferences.maxLiftHeightPxForCurrentPlatform);
 
       await LyricPreferences.instance.reset();
 
@@ -71,6 +77,41 @@ void main() {
       expect(LyricPreferences.instance.staggerFromCurrentLine, isTrue);
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getBool('lyric_stagger_from_current'), isNull);
+    });
+  });
+
+  group('⑥ 预启动提前量微调 preStartBiasMs', () {
+    test('默认 0（恰在边界释放，不引入额外提前）', () {
+      expect(LyricPreferences.instance.preStartBiasMs,
+          equals(LyricPreferences.defaultPreStartBiasMs));
+      expect(LyricPreferences.instance.preStartBiasMs, equals(0.0));
+    });
+
+    test('setter 生效并 clamp 到 [0, 300]', () async {
+      await LyricPreferences.instance.setPreStartBiasMs(120);
+      expect(LyricPreferences.instance.preStartBiasMs, equals(120.0));
+
+      await LyricPreferences.instance.setPreStartBiasMs(999);
+      expect(LyricPreferences.instance.preStartBiasMs,
+          equals(LyricPreferences.maxPreStartBiasMs));
+
+      await LyricPreferences.instance.setPreStartBiasMs(-5);
+      expect(LyricPreferences.instance.preStartBiasMs,
+          equals(LyricPreferences.minPreStartBiasMs));
+    });
+
+    test('持久化到 lyric_prestart_bias_ms', () async {
+      await LyricPreferences.instance.setPreStartBiasMs(80);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getDouble('lyric_prestart_bias_ms'), equals(80.0));
+    });
+
+    test('reset 后回到默认 0 且 key 被移除', () async {
+      await LyricPreferences.instance.setPreStartBiasMs(150);
+      await LyricPreferences.instance.reset();
+      expect(LyricPreferences.instance.preStartBiasMs, equals(0.0));
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getDouble('lyric_prestart_bias_ms'), isNull);
     });
   });
 
@@ -131,30 +172,33 @@ void main() {
       expect(LyricPreferences.instance.dynamicColorMixRatio, equals(0.15));
     });
 
-    test('setter 生效并 clamp 到 [0.0, 1.0]', () async {
-      await LyricPreferences.instance.setDynamicColorMixRatio(0.4);
-      expect(LyricPreferences.instance.dynamicColorMixRatio, equals(0.4));
+    test('setter 生效并 clamp 到当前平台范围', () async {
+      final hi = LyricPreferences.maxDynamicColorMixRatioForCurrentPlatform;
+      final lo = LyricPreferences.minDynamicColorMixRatioForCurrentPlatform;
+      await LyricPreferences.instance.setDynamicColorMixRatio(hi);
+      expect(LyricPreferences.instance.dynamicColorMixRatio, equals(hi));
 
       await LyricPreferences.instance.setDynamicColorMixRatio(99);
-      expect(LyricPreferences.instance.dynamicColorMixRatio,
-          equals(LyricPreferences.maxDynamicColorMixRatio));
+      expect(LyricPreferences.instance.dynamicColorMixRatio, equals(hi));
 
       await LyricPreferences.instance.setDynamicColorMixRatio(-5);
-      expect(LyricPreferences.instance.dynamicColorMixRatio,
-          equals(LyricPreferences.minDynamicColorMixRatio));
+      expect(LyricPreferences.instance.dynamicColorMixRatio, equals(lo));
     });
 
     test('持久化到 lyric_dynamic_color_mix_ratio', () async {
-      await LyricPreferences.instance.setDynamicColorMixRatio(0.6);
+      final target =
+          LyricPreferences.maxDynamicColorMixRatioForCurrentPlatform;
+      await LyricPreferences.instance.setDynamicColorMixRatio(target);
       final prefs = await SharedPreferences.getInstance();
-      expect(prefs.getDouble('lyric_dynamic_color_mix_ratio'), equals(0.6));
+      expect(prefs.getDouble('lyric_dynamic_color_mix_ratio'), equals(target));
     });
 
     test('reset 后回到默认值且 key 被移除', () async {
-      await LyricPreferences.instance.setDynamicColorMixRatio(0.8);
+      await LyricPreferences.instance.setDynamicColorMixRatio(
+          LyricPreferences.minDynamicColorMixRatioForCurrentPlatform);
       await LyricPreferences.instance.reset();
       expect(LyricPreferences.instance.dynamicColorMixRatio,
-          equals(LyricPreferences.defaultDynamicColorMixRatio));
+          equals(LyricPreferences.defaultDynamicColorMixRatioForCurrentPlatform));
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getDouble('lyric_dynamic_color_mix_ratio'), isNull);
     });
@@ -189,42 +233,43 @@ void main() {
   /// 默认值 = 历史写死值（1.5 / 0.18 / 0.9），保证升级用户视觉不变；
   /// 渲染侧在 _LyricsPainter.paint 即时读取，setter 通知是拖滑块实时生效的前提。
   group('⑧ 间奏点自定义 interludeDots*', () {
-    test('默认值等于历史写死系数（1.5 / 0.18 / 0.9）', () {
+    test('默认值为当前平台中轴值', () {
       expect(LyricPreferences.instance.interludeDotsStartX,
-          equals(LyricPreferences.defaultInterludeDotsStartX));
-      expect(LyricPreferences.instance.interludeDotsStartX, equals(1.5));
+          equals(LyricPreferences.defaultInterludeDotsStartXForCurrentPlatform));
       expect(LyricPreferences.instance.interludeDotRadius,
-          equals(LyricPreferences.defaultInterludeDotRadius));
-      expect(LyricPreferences.instance.interludeDotRadius, equals(0.18));
+          equals(LyricPreferences.defaultInterludeDotRadiusForCurrentPlatform));
       expect(LyricPreferences.instance.interludeDotSpacing,
-          equals(LyricPreferences.defaultInterludeDotSpacing));
+          equals(LyricPreferences.defaultInterludeDotSpacingForCurrentPlatform));
+      // 两平台默认值一致（1.5 / 0.18 / 0.9）
+      expect(LyricPreferences.instance.interludeDotsStartX, equals(1.5));
+      expect(LyricPreferences.instance.interludeDotRadius, equals(0.18));
       expect(LyricPreferences.instance.interludeDotSpacing, equals(0.9));
     });
 
-    test('setter 生效并 clamp 到声明范围', () async {
-      await LyricPreferences.instance.setInterludeDotsStartX(3.2);
-      expect(LyricPreferences.instance.interludeDotsStartX, equals(3.2));
+    test('setter 生效并 clamp 到当前平台范围', () async {
+      final hiX = LyricPreferences.maxInterludeDotsStartXForCurrentPlatform;
+      final loX = LyricPreferences.minInterludeDotsStartXForCurrentPlatform;
+      await LyricPreferences.instance.setInterludeDotsStartX(hiX);
+      expect(LyricPreferences.instance.interludeDotsStartX, equals(hiX));
       await LyricPreferences.instance.setInterludeDotsStartX(99);
-      expect(LyricPreferences.instance.interludeDotsStartX,
-          equals(LyricPreferences.maxInterludeDotsStartX));
+      expect(LyricPreferences.instance.interludeDotsStartX, equals(hiX));
       await LyricPreferences.instance.setInterludeDotsStartX(-1);
-      expect(LyricPreferences.instance.interludeDotsStartX,
-          equals(LyricPreferences.minInterludeDotsStartX));
+      expect(LyricPreferences.instance.interludeDotsStartX, equals(loX));
 
-      await LyricPreferences.instance.setInterludeDotRadius(0.3);
-      expect(LyricPreferences.instance.interludeDotRadius, equals(0.3));
+      final hiR = LyricPreferences.maxInterludeDotRadiusForCurrentPlatform;
+      final loR = LyricPreferences.minInterludeDotRadiusForCurrentPlatform;
+      await LyricPreferences.instance.setInterludeDotRadius(hiR);
+      expect(LyricPreferences.instance.interludeDotRadius, equals(hiR));
       await LyricPreferences.instance.setInterludeDotRadius(99);
-      expect(LyricPreferences.instance.interludeDotRadius,
-          equals(LyricPreferences.maxInterludeDotRadius));
+      expect(LyricPreferences.instance.interludeDotRadius, equals(hiR));
       await LyricPreferences.instance.setInterludeDotRadius(0);
-      expect(LyricPreferences.instance.interludeDotRadius,
-          equals(LyricPreferences.minInterludeDotRadius));
+      expect(LyricPreferences.instance.interludeDotRadius, equals(loR));
 
-      await LyricPreferences.instance.setInterludeDotSpacing(1.4);
-      expect(LyricPreferences.instance.interludeDotSpacing, equals(1.4));
+      final hiS = LyricPreferences.maxInterludeDotSpacingForCurrentPlatform;
+      await LyricPreferences.instance.setInterludeDotSpacing(hiS);
+      expect(LyricPreferences.instance.interludeDotSpacing, equals(hiS));
       await LyricPreferences.instance.setInterludeDotSpacing(99);
-      expect(LyricPreferences.instance.interludeDotSpacing,
-          equals(LyricPreferences.maxInterludeDotSpacing));
+      expect(LyricPreferences.instance.interludeDotSpacing, equals(hiS));
       await LyricPreferences.instance.setInterludeDotSpacing(0);
       expect(LyricPreferences.instance.interludeDotSpacing,
           equals(LyricPreferences.minInterludeDotSpacing));
@@ -246,7 +291,9 @@ void main() {
 
     test('持久化到 lyric_interlude_dots_start_x / _dot_radius / _dot_spacing',
         () async {
-      await LyricPreferences.instance.setInterludeDotsStartX(2.25);
+      // 取非默认值（上沿附近），确保真正落盘
+      await LyricPreferences.instance
+          .setInterludeDotsStartX(2.25);
       await LyricPreferences.instance.setInterludeDotRadius(0.22);
       await LyricPreferences.instance.setInterludeDotSpacing(1.1);
       final prefs = await SharedPreferences.getInstance();
@@ -256,18 +303,21 @@ void main() {
     });
 
     test('reset 后回到默认值且 key 被移除', () async {
-      await LyricPreferences.instance.setInterludeDotsStartX(4);
-      await LyricPreferences.instance.setInterludeDotRadius(0.35);
-      await LyricPreferences.instance.setInterludeDotSpacing(2);
+      await LyricPreferences.instance
+          .setInterludeDotsStartX(LyricPreferences.maxInterludeDotsStartXForCurrentPlatform);
+      await LyricPreferences.instance.setInterludeDotRadius(
+          LyricPreferences.maxInterludeDotRadiusForCurrentPlatform);
+      await LyricPreferences.instance.setInterludeDotSpacing(
+          LyricPreferences.maxInterludeDotSpacingForCurrentPlatform);
 
       await LyricPreferences.instance.reset();
 
       expect(LyricPreferences.instance.interludeDotsStartX,
-          equals(LyricPreferences.defaultInterludeDotsStartX));
+          equals(LyricPreferences.defaultInterludeDotsStartXForCurrentPlatform));
       expect(LyricPreferences.instance.interludeDotRadius,
-          equals(LyricPreferences.defaultInterludeDotRadius));
+          equals(LyricPreferences.defaultInterludeDotRadiusForCurrentPlatform));
       expect(LyricPreferences.instance.interludeDotSpacing,
-          equals(LyricPreferences.defaultInterludeDotSpacing));
+          equals(LyricPreferences.defaultInterludeDotSpacingForCurrentPlatform));
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getDouble('lyric_interlude_dots_start_x'), isNull);
       expect(prefs.getDouble('lyric_interlude_dot_radius'), isNull);

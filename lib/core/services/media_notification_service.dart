@@ -570,6 +570,20 @@ class MediaNotificationService {
     } catch (_) {}
   }
 
+  // CarWith 车机投屏逐句歌词：走与蓝牙歌词同一条 floating_lyric 通道，
+  // 原生 MainActivity 把它转成 AudioPlaybackService 的 ACTION_UPDATE_CAR_LYRIC。
+  // enabled=false 且 lyric 为空串 = 「歌词收掉」（规格 §九 第 5 条：关开关时
+  // 车机不停在最后一句）。原生侧对空串做清空处理；通道异常静默吞掉，
+  // 与 updateBluetoothLyric 同款（非 Android 环境没有该通道，不能让推词链路炸穿）。
+  static Future<void> updateCarWithLyricLine(bool enabled, String lyric) async {
+    try {
+      await _channel.invokeMethod('updateCarWithLyricLine', {
+        'enabled': enabled,
+        'lyric': lyric,
+      });
+    } catch (_) {}
+  }
+
   // LyricInfo 歌词转发：把整首歌词（LRC/ELRC JSON）写入 MediaSession extras，
   // 供 ColorOS 桌面歌词 / LyricInfo 模块等第三方系统读取。
   // 传入空字符串表示移除 lyricInfo（切歌/功能关闭时调用）。

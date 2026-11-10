@@ -30,6 +30,7 @@ import 'core/remote/tv_ime_proxy_bridge.dart';
 import 'core/remote/tv_key_repeat.dart';
 // tv: 播放页返回键兜底（焦点丢回路由 FocusScope 时页内拦截器收不到按键）。
 import 'core/remote/tv_player_back_focus.dart';
+import 'core/services/car_with_service.dart';
 import 'core/services/diagnostic_logger.dart';
 import 'core/services/external_media_intent_service.dart';
 import 'core/services/fm_widget_sync.dart';
@@ -344,6 +345,11 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => SongMatchProvider()),
         // 车机模式（常驻播放器面板的开关 / 宽度 / 停靠位置）
         ChangeNotifierProvider(create: (_) => CarModeProvider()),
+        // 小米 CarWith（车机连接态 + 跟随车机深浅色 + 车机投屏歌词）。
+        // **必须用 .value**：CarWithService 是进程级单例，服务自身在
+        // `start()` 里负责生命周期；用默认构造会在 MultiProvider 销毁时
+        // 把单例 dispose 掉，之后所有 notifyListeners 直接抛异常。
+        ChangeNotifierProvider.value(value: CarWithService.instance),
         // 一起听（众乐房）：广场列表 + 房间会话（心跳/轮询/播放同步）
         ChangeNotifierProvider(create: (_) => ListenTogetherProvider()),
         // 可选扩展：宿主注入的额外 Provider（默认无）
@@ -856,6 +862,23 @@ class _AppViewState extends State<_AppView> {
     super.dispose();
   }
 
+  /// 实际喂给 MaterialApp 的主题档：CarWith 覆盖值优先于用户选的档位。
+  ///
+  /// **取值必须在 build 里 watch**：`themeOverride` 由 2 秒心跳 / 回前台在连接态
+  /// 翻转时更新，不订阅就只是「当场读一次」——车机切深/浅色时这里不会重建，
+  /// 主题永远不动。
+  /// 覆盖值为 null（没勾「跟随CarWith」/ 勾了但没连车机）时回到用户自己选的档，
+  /// 上游行为逐字不变。
+  /// provider 由上面 MyApp 的 MultiProvider 注册，本 widget 在其子树内，
+  /// 故 watch 成立（与本方法下方取 ThemeProvider 的写法同源）。
+  ThemeMode _effectiveThemeMode(
+    BuildContext context,
+    ThemeProvider themeProvider,
+  ) {
+    final carWith = context.watch<CarWithService>();
+    return carWith.themeOverride ?? themeProvider.themeMode;
+  }
+
   @override
   Widget build(BuildContext context) {
     final themeProvider = context.watch<ThemeProvider>();
@@ -896,7 +919,7 @@ class _AppViewState extends State<_AppView> {
         ),
         themeProvider,
       ),
-      themeMode: themeProvider.themeMode,
+      themeMode: _effectiveThemeMode(context, themeProvider),
       // 封面取色驱动的主题切换（切歌 → 封面主色 → ThemeProvider → 这里）在
       // 视频观感里明显慢于封面滑动：封面先滑到位、标题随后、背景色最后收敛。
       // MaterialApp 内建 AnimatedTheme 的默认 200ms 太快，拉长到 520ms 后
@@ -1181,6 +1204,12 @@ class _SystemUiUpdaterState extends State<_SystemUiUpdater>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // 冷启动先种一次手机系统深浅色：CarWithService 的 themeOverride 要
+    // 「车机报深色 **或** 手机系统报深色」之一成立，而它自己无从知道手机侧的值，
+    // 只能由本观察者喂进来。不种的话首帧到第一次系统回调之间那几秒，
+    // 车机连着且车机是浅色时覆盖值会一直按 light 处理（值本身是对的，
+    // 但心跳首轮读数与它比对齐会慢一轮）。updateSystemDark 内部按值去重。
+    CarWithService.instance.updateSystemDark(_platformIsDark());
   }
 
   @override
@@ -1196,10 +1225,33 @@ class _SystemUiUpdaterState extends State<_SystemUiUpdater>
   }
 
   @override
+  void didChangePlatformBrightness() {
+    // 系统深浅色翻转（用户手动切、或跟随时间自动切）→ 喂给 CarWithService。
+    // 它只在「勾了跟随CarWith 且正连着车机」时才参与 themeOverride，
+    // 没连车机时这条链一个通知也不发，上游行为逐字不变。
+    CarWithService.instance.updateSystemDark(_platformIsDark());
+  }
+
+  /// 手机系统当前是否深色。
+  ///
+  /// 走 `platformDispatcher` 而不是 `Theme.of(context).platformBrightness`：
+  /// 本方法要在 initState 里播种一次，而 initState 阶段还不该依赖 inherited
+  /// widget（那时订阅关系没建好）。dispatcher 是普通 getter，不依赖上下文，
+  /// 读到的就是系统当前值；测试环境（TestWidgetsFlutterBinding）默认 light，
+  /// 不会抛。
+  bool _platformIsDark() =>
+      WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+      Brightness.dark;
+
+  @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 当应用从后台恢复或从其他页面返回时，恢复系统 UI
     if (state == AppLifecycleState.resumed) {
       _updateSystemUi();
+      // 回前台补一轮连接态读数：心跳只在「勾着且本平台可读」时存在，
+      // 进程被挂起期间车机可能已经连上/断开/换了深浅色，这里当场对齐一次，
+      // 不等下一次心跳（否则用户会看到主题滞后两三秒才翻）。
+      CarWithService.instance.refreshNow();
     }
   }
 

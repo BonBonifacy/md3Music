@@ -342,7 +342,17 @@ class LyricLayout {
   /// 由用户在设置页调节（[LyricPreferences.inactiveScale]），默认 0.850。
   /// 清晰层非当前行与 AM 歌词模糊层共用此值：模糊图在离屏渲染时烘焙同一
   /// pivot+scale 变换，保证两层字形尺寸在任何取值下都严格一致。
-  static double get inactiveScale => LyricPreferences.instance.inactiveScale;
+  ///
+  /// 用户可把范围拖到 0~1；缩放为 0 会让离屏模糊矩阵退化（canvas.scale(0)
+  /// 不可逆），故对外暴露时钳到一个极小正数，避免黑屏/异常。
+  static const double _minEffectiveInactiveScale = 0.01;
+
+  static double get inactiveScale {
+    final raw = LyricPreferences.instance.inactiveScale;
+    return raw < _minEffectiveInactiveScale
+        ? _minEffectiveInactiveScale
+        : raw;
+  }
 
   /// 模糊层离屏渲染缩放：与清晰层非当前行 scale 完全同源，不叠任何额外因子。
   ///

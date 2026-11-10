@@ -1,6 +1,8 @@
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:md3music/modules/settings/lyric_animation_settings_page.dart';
+import 'package:md3music/widgets/apple_lyrics/layout/lyric_animation_preset_store.dart';
 import 'package:md3music/widgets/apple_lyrics/layout/lyric_preferences.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -17,7 +19,9 @@ void main() {
 
   setUp(() {
     SharedPreferences.setMockInitialValues(<String, Object>{});
+    LyricAnimationPresetStore.instance.resetForTest();
     addTearDown(() => LyricPreferences.instance.reset());
+    addTearDown(() => LyricAnimationPresetStore.instance.resetForTest());
   });
 
   Future<void> pumpPage(WidgetTester tester) async {
@@ -28,76 +32,98 @@ void main() {
   }
 
   /// 把本页参数全部设成非默认值（错峰起点开关设为 false）。
+  /// 取值需落在当前平台范围内（Windows 便携版范围已收敛）。
   Future<void> setAllNonDefault() async {
     final prefs = LyricPreferences.instance;
-    await prefs.setInactiveScale(0.9);
-    await prefs.setAlignPosition(0.5);
-    await prefs.setLiftHeightPx(8.0);
-    // 间奏点三项默认 1.5 / 0.18 / 0.9 → 全部取非默认值
-    await prefs.setInterludeDotsStartX(3.0);
-    await prefs.setInterludeDotRadius(0.3);
-    await prefs.setInterludeDotSpacing(1.5);
-    await prefs.setCascadeMaxDelayMs(300);
-    await prefs.setCascadeBaseStepMs(120);
-    await prefs.setCascadeDecayX(1.5);
+    await prefs.setInactiveScale(
+        LyricPreferences.minInactiveScaleForCurrentPlatform);
+    await prefs.setAlignPosition(
+        LyricPreferences.minAlignPositionForCurrentPlatform);
+    await prefs.setLiftHeightPx(
+        LyricPreferences.minLiftHeightPxForCurrentPlatform);
+    await prefs.setInterludeDotsStartX(
+        LyricPreferences.maxInterludeDotsStartXForCurrentPlatform);
+    await prefs.setInterludeDotRadius(
+        LyricPreferences.maxInterludeDotRadiusForCurrentPlatform);
+    await prefs.setInterludeDotSpacing(
+        LyricPreferences.maxInterludeDotSpacingForCurrentPlatform);
+    // 默认值 0 位于范围正中，取上限作为非默认值
+    await prefs.setCascadeMaxDelayMs(
+        LyricPreferences.maxCascadeMaxDelayMsForCurrentPlatform);
+    // 错峰步长默认值 = 0（= 下限），取上限作为非默认值
+    await prefs.setCascadeBaseStepMs(
+        LyricPreferences.maxCascadeBaseStepMsForCurrentPlatform);
+    await prefs.setCascadeDecayX(
+        LyricPreferences.maxCascadeDecayXForCurrentPlatform);
     await prefs.setStaggerFromCurrentLine(false);
-    // 字内渐变默认 sweep → 非默认取 classic
     await prefs.setFillMode(LyricFillMode.classic);
-    // 辉光判定默认 fixed → 非默认取 adaptive
     await prefs.setGlowThresholdMode(GlowThresholdMode.adaptive);
-    // 动态颜色混色比例默认 0.15 → 非默认取 0.5
-    await prefs.setDynamicColorMixRatio(0.5);
-    // 辉光强度默认 1.0 → 非默认取 1.6（滑块仅辉光开关开启时显示）
+    await prefs.setDynamicColorMixRatio(
+        LyricPreferences.maxDynamicColorMixRatioForCurrentPlatform);
     await prefs.setUseGlowEffect(true);
-    await prefs.setGlowIntensity(1.6);
+    await prefs.setGlowIntensity(
+        LyricPreferences.maxGlowIntensityForCurrentPlatform);
   }
 
   /// 断言本页全部参数（含间奏点三项、错峰起点开关、字内渐变样式）等于默认值。
   void expectAllDefaults() {
     final prefs = LyricPreferences.instance;
-    expect(prefs.inactiveScale, equals(LyricPreferences.defaultInactiveScale));
+    expect(prefs.inactiveScale,
+        equals(LyricPreferences.defaultInactiveScaleForCurrentPlatform));
     expect(prefs.alignPosition,
         equals(LyricPreferences.defaultAlignPositionForCurrentPlatform));
     expect(prefs.liftHeightPx,
         equals(LyricPreferences.defaultLiftHeightPxForCurrentPlatform));
     expect(prefs.interludeDotsStartX,
-        equals(LyricPreferences.defaultInterludeDotsStartX));
+        equals(LyricPreferences.defaultInterludeDotsStartXForCurrentPlatform));
     expect(prefs.interludeDotRadius,
-        equals(LyricPreferences.defaultInterludeDotRadius));
+        equals(LyricPreferences.defaultInterludeDotRadiusForCurrentPlatform));
     expect(prefs.interludeDotSpacing,
-        equals(LyricPreferences.defaultInterludeDotSpacing));
+        equals(LyricPreferences.defaultInterludeDotSpacingForCurrentPlatform));
     expect(prefs.cascadeMaxDelayMs,
         equals(LyricPreferences.defaultCascadeMaxDelayMsForCurrentPlatform));
     expect(prefs.cascadeBaseStepMs,
         equals(LyricPreferences.defaultCascadeBaseStepMsForCurrentPlatform));
-    expect(prefs.cascadeDecayX, equals(LyricPreferences.defaultCascadeDecayX));
+    expect(prefs.cascadeDecayX,
+        equals(LyricPreferences.defaultCascadeDecayXForCurrentPlatform));
     expect(prefs.staggerFromCurrentLine,
         equals(LyricPreferences.defaultStaggerFromCurrentLine));
     expect(prefs.fillMode, equals(LyricFillMode.sweep));
     expect(prefs.glowThresholdMode, equals(GlowThresholdMode.fixed));
     expect(prefs.dynamicColorMixRatio,
-        equals(LyricPreferences.defaultDynamicColorMixRatio));
+        equals(LyricPreferences.defaultDynamicColorMixRatioForCurrentPlatform));
     expect(prefs.glowIntensity,
-        equals(LyricPreferences.defaultGlowIntensity));
+        equals(LyricPreferences.defaultGlowIntensityForCurrentPlatform));
   }
 
   /// 断言本页参数 + 开关 + 字内渐变样式仍是非默认值（用于取消路径）。
   void expectAllNonDefault() {
     final prefs = LyricPreferences.instance;
-    expect(prefs.inactiveScale, equals(0.9));
-    expect(prefs.alignPosition, equals(0.5));
-    expect(prefs.liftHeightPx, equals(8.0));
-    expect(prefs.interludeDotsStartX, equals(3.0));
-    expect(prefs.interludeDotRadius, equals(0.3));
-    expect(prefs.interludeDotSpacing, equals(1.5));
-    expect(prefs.cascadeMaxDelayMs, equals(300.0));
-    expect(prefs.cascadeBaseStepMs, equals(120.0));
-    expect(prefs.cascadeDecayX, equals(1.5));
+    expect(prefs.inactiveScale,
+        equals(LyricPreferences.minInactiveScaleForCurrentPlatform));
+    expect(prefs.alignPosition,
+        equals(LyricPreferences.minAlignPositionForCurrentPlatform));
+    expect(prefs.liftHeightPx,
+        equals(LyricPreferences.minLiftHeightPxForCurrentPlatform));
+    expect(prefs.interludeDotsStartX,
+        equals(LyricPreferences.maxInterludeDotsStartXForCurrentPlatform));
+    expect(prefs.interludeDotRadius,
+        equals(LyricPreferences.maxInterludeDotRadiusForCurrentPlatform));
+    expect(prefs.interludeDotSpacing,
+        equals(LyricPreferences.maxInterludeDotSpacingForCurrentPlatform));
+    expect(prefs.cascadeMaxDelayMs,
+        equals(LyricPreferences.maxCascadeMaxDelayMsForCurrentPlatform));
+    expect(prefs.cascadeBaseStepMs,
+        equals(LyricPreferences.maxCascadeBaseStepMsForCurrentPlatform));
+    expect(prefs.cascadeDecayX,
+        equals(LyricPreferences.maxCascadeDecayXForCurrentPlatform));
     expect(prefs.staggerFromCurrentLine, isFalse);
     expect(prefs.fillMode, equals(LyricFillMode.classic));
     expect(prefs.glowThresholdMode, equals(GlowThresholdMode.adaptive));
-    expect(prefs.dynamicColorMixRatio, equals(0.5));
-    expect(prefs.glowIntensity, equals(1.6));
+    expect(prefs.dynamicColorMixRatio,
+        equals(LyricPreferences.maxDynamicColorMixRatioForCurrentPlatform));
+    expect(prefs.glowIntensity,
+        equals(LyricPreferences.maxGlowIntensityForCurrentPlatform));
   }
 
   group('AppBar 重置按钮（恢复本页默认值）', () {
@@ -357,6 +383,211 @@ void main() {
 
       await tester.tap(find.text('取消'));
       await tester.pumpAndSettle();
+    });
+  });
+
+  group('动画预设面板', () {
+    Future<void> openSheet(WidgetTester tester) async {
+      await tester.tap(find.byIcon(Icons.bookmarks_outlined));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('AppBar 预设按钮打开管理面板（含内置默认预设）', (tester) async {
+      await pumpPage(tester);
+      expect(find.byIcon(Icons.bookmarks_outlined), findsOneWidget);
+
+      await openSheet(tester);
+      expect(find.text('动画预设'), findsOneWidget);
+      expect(find.text('保存当前设置为预设'), findsOneWidget);
+      // 内置默认预设始终存在；空态只提示「没有自定义预设」
+      expect(
+        find.text(LyricAnimationPresetStore.defaultPresetName),
+        findsOneWidget,
+      );
+      expect(find.textContaining('还没有自定义预设'), findsOneWidget);
+      // 内置预设没有删除按钮
+      expect(find.byIcon(Icons.delete_outline), findsNothing);
+    });
+
+    testWidgets('点击内置默认预设应用兜底参数，长按不弹重命名', (tester) async {
+      final prefs = LyricPreferences.instance;
+      await pumpPage(tester);
+      await openSheet(tester);
+
+      await tester.longPress(
+        find.text(LyricAnimationPresetStore.defaultPresetName),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('重命名预设'), findsNothing);
+
+      await tester.tap(
+        find.text(LyricAnimationPresetStore.defaultPresetName),
+      );
+      await tester.pumpAndSettle();
+      expect(prefs.alignPosition, 0.34844447355541364);
+      expect(prefs.cascadeMaxDelayMs, 990.0);
+      expect(prefs.staggerFromCurrentLine, isFalse);
+    });
+
+    testWidgets('保存为预设时内置默认名称被保留', (tester) async {
+      await pumpPage(tester);
+      await openSheet(tester);
+      await tester.tap(find.text('保存当前设置为预设'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byType(TextField),
+        LyricAnimationPresetStore.defaultPresetName,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('该名称为内置预设保留'), findsOneWidget);
+      final saveButton = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, '保存'),
+      );
+      expect(saveButton.onPressed, isNull);
+
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('保存当前设置为预设：自定义名称后入库并刷新列表', (tester) async {
+      await pumpPage(tester);
+      await openSheet(tester);
+
+      await tester.tap(find.text('保存当前设置为预设'));
+      await tester.pumpAndSettle();
+      expect(find.text('保存为预设'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '我的预设');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+
+      final store = LyricAnimationPresetStore.instance;
+      expect(store.presets.map((p) => p.name), contains('我的预设'));
+      expect(find.text('我的预设'), findsOneWidget);
+      // 预设行展示来源平台标签
+      final platformLabel = LyricAnimationPresetStore.platformLabel(
+        LyricAnimationPresetStore.currentPlatformTag(),
+      );
+      expect(find.textContaining(platformLabel), findsOneWidget);
+    });
+
+    testWidgets('点击预设切换参数', (tester) async {
+      final prefs = LyricPreferences.instance;
+      await prefs.setAlignPosition(0.4);
+      await LyricAnimationPresetStore.instance.saveCurrentAsPreset('A');
+      await prefs.setAlignPosition(0.55);
+
+      await pumpPage(tester);
+      await openSheet(tester);
+
+      await tester.tap(find.text('A'));
+      await tester.pumpAndSettle();
+      expect(prefs.alignPosition, 0.4);
+    });
+
+    testWidgets('长按预设弹出重命名，改名后列表刷新', (tester) async {
+      await LyricAnimationPresetStore.instance.saveCurrentAsPreset('A');
+      await pumpPage(tester);
+      await openSheet(tester);
+
+      await tester.longPress(find.text('A'));
+      await tester.pumpAndSettle();
+      expect(find.text('重命名预设'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), 'B');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('重命名'));
+      await tester.pumpAndSettle();
+
+      final names = LyricAnimationPresetStore.instance.presets.map((p) => p.name);
+      expect(names, contains('B'));
+      expect(names, isNot(contains('A')));
+    });
+
+    testWidgets('从剪贴板导入前可修改预设名称', (tester) async {
+      const json = '{"name":"原始名","values":{"alignPosition":0.4}}';
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.getData') {
+          return <String, dynamic>{'text': json};
+        }
+        return null;
+      });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+
+      await pumpPage(tester);
+      await openSheet(tester);
+      await tester.tap(find.text('从剪贴板导入'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('导入预设'), findsOneWidget);
+      expect(find.byType(TextField), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '自定义名');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('导入'));
+      await tester.pumpAndSettle();
+
+      final store = LyricAnimationPresetStore.instance;
+      expect(store.presets.single.name, '自定义名');
+      expect(store.presets.single.values['alignPosition'], 0.4);
+    });
+
+    testWidgets('复制当前设置：可输入预设名并携带平台标签', (tester) async {
+      String? copied;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          final arguments = call.arguments;
+          if (arguments is Map) {
+            copied = arguments['text'] as String?;
+          }
+        }
+        return null;
+      });
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+
+      await pumpPage(tester);
+      await openSheet(tester);
+      await tester.tap(find.text('复制当前设置'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('导出当前设置'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), '我的导出');
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('复制'));
+      await tester.pumpAndSettle();
+
+      expect(copied, isNotNull);
+      expect(copied, contains('"name": "我的导出"'));
+      expect(
+        copied,
+        contains(
+          '"platform": "${LyricAnimationPresetStore.currentPlatformTag()}"',
+        ),
+      );
+    });
+
+    testWidgets('行尾删除按钮同样可删除（TV/无障碍路径）', (tester) async {
+      await LyricAnimationPresetStore.instance.saveCurrentAsPreset('B');
+      await pumpPage(tester);
+      await openSheet(tester);
+
+      await tester.tap(find.byIcon(Icons.delete_outline));
+      await tester.pumpAndSettle();
+      expect(find.text('删除预设'), findsOneWidget);
+
+      await tester.tap(find.text('删除'));
+      await tester.pumpAndSettle();
+      expect(LyricAnimationPresetStore.instance.presets, isEmpty);
     });
   });
 }

@@ -184,7 +184,7 @@ class MainActivity : FlutterActivity() {
                 Log.w("AudioOffload", "插件注册失败：$it")
             }
             ExternalEditorPlugin(context).register(engine)
-            DiagnosticLogPlugin().register(engine)
+            DiagnosticLogPlugin(context.applicationContext).register(engine)
             AutomixAnalysisPlugin().register(engine)
         }
 
@@ -499,6 +499,9 @@ class MainActivity : FlutterActivity() {
         if (cached != null && cached.dartExecutor.isExecutingDart() && isFlutterJniAttached(cached)) {
             // 宿主引擎复用路径：configureFlutterEngine 不保证执行，显式补注册 Lyrico 编辑插件
             try { ExternalEditorPlugin(this).register(cached) } catch (_: Throwable) {}
+            // 适配 CarWith：同上先例——复用引擎时补注册 car_with 通道，
+            // 否则 Dart 心跳取原生快照会 missing-plugin 报错（register 内部全程兜底）。
+            registerCarWithChannel(cached)
             return cached
         }
         if (cached != null) {
@@ -521,6 +524,13 @@ class MainActivity : FlutterActivity() {
     } catch (error: Exception) {
         Log.w("MainActivity", "unable to inspect cached FlutterJNI attachment", error)
         false
+    }
+
+    /// 适配 CarWith：car_with 通道注册助手——configureFlutterEngine（前台引擎）、
+    /// provideFlutterEngine（复用 headless 引擎）两处共用。用 applicationContext：
+    /// handler 闭包挂在引擎上跨 Activity 存活，不能捕获 Activity。
+    private fun registerCarWithChannel(engine: FlutterEngine) {
+        CarWithState.register(engine, applicationContext)
     }
 
     // 引擎已交给进程缓存和播放服务持有；首个 Activity 也不能销毁它，
@@ -563,6 +573,9 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        // 适配 CarWith：连接态 + 车机深浅色快照通道（Dart 心跳 / 回前台 / 勾开关当场取用）。
+        registerCarWithChannel(flutterEngine)
 
         // 系统输出切换（Android 14+ 的输出切换器；小米 HyperOS 上即「妙播」面板）。
         // 失败只降级该入口：注册异常绝不能影响启动（同类兜底见 MusicHaptics/AudioOffload）。
@@ -971,6 +984,24 @@ class MainActivity : FlutterActivity() {
                         putExtra(
                             AudioPlaybackService.EXTRA_BT_LYRIC_TEXT,
                             call.argument<String>("lyric") ?: ""
+                        )
+                    }
+                    startService(intent)
+                    result.success(true)
+                }
+                // 适配 CarWith：车机投屏逐句歌词推送——与蓝牙歌词同款 Intent 转发，
+                // 落到 AudioPlaybackService.applyCarWithLyricLine（现读连接态刷门控
+                // → 300ms 合并窗口 → vendored 层写 ucar 歌词键）。
+                "updateCarWithLyricLine" -> {
+                    val intent = Intent(this, AudioPlaybackService::class.java).apply {
+                        action = AudioPlaybackService.ACTION_UPDATE_CAR_LYRIC
+                        putExtra(
+                            AudioPlaybackService.EXTRA_CAR_LYRIC_TEXT,
+                            call.argument<String>("lyric") ?: ""
+                        )
+                        putExtra(
+                            AudioPlaybackService.EXTRA_CAR_LYRIC_ENABLED,
+                            call.argument<Boolean>("enabled") ?: false
                         )
                     }
                     startService(intent)

@@ -29254,16 +29254,6 @@ from :2790
 merge :2793
 commit refs/heads/rust-local-force
 mark :2795
-author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1793853385 +0800
-committer GitHub <noreply@github.com> 1793853385 +0800
-data 72
-Merge pull request #182 from Little-White3110/rust-local-two
-
-bug fixes
-from :2793
-merge :2794
-commit refs/heads/rust-local-force
-mark :2796
 author Little-White3110 <Little-White3110@users.noreply.github.com> 1793855181 +0800
 committer Little-White3110 <Little-White3110@users.noreply.github.com> 1793855181 +0800
 data 623
@@ -29279,7 +29269,7 @@ fix(playlist): 歌手名/歌曲名称排序改按拼音 A→Z
 - 单测按新语义修正 2 个旧断言，新增拼音序/中英混排/多歌手连写等 5 例
 from :2794
 commit refs/heads/rust-local-force
-mark :2797
+mark :2796
 author Little-White3110 <Little-White3110@users.noreply.github.com> 1793855296 +0800
 committer Little-White3110 <Little-White3110@users.noreply.github.com> 1793855296 +0800
 data 322
@@ -29288,79 +29278,9 @@ fix(library): 本地音乐按标题/歌手排序改按拼音 A→Z
 与歌单详情页同一问题：String.compareTo 中文按 Unicode 码位序，
 与 A→Z 拼音预期不符。复用 pinyinSortKey（含单字记忆化缓存）；
 标题排序同时改用 displayName，剥离 .mp3 等后缀，与列表显示一致。
-from :2796
-commit refs/heads/rust-local-force
-mark :2798
-author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1793866432 +0800
-committer GitHub <noreply@github.com> 1793866432 +0800
-data 81
-Merge pull request #183 from Little-White3110/rust-local-two
-
-排序算法修复
 from :2795
-merge :2797
 commit refs/heads/rust-local-force
-mark :2799
-author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793876510 +0000
-committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793876510 +0000
-data 32
-chore: update GitHub star trend
-from :2798
-commit refs/heads/rust-local-force
-mark :2800
-author vcexml <3356141621@qq.com> 1793942029 +0800
-committer vcexml <3356141621@qq.com> 1793942029 +0800
-data 379
-feat: 歌词信息推送增加重试机制和会话生成控制
-
-实现 tryUpdateLyricInfo 方法，支持原生端失败后重试
-添加会话生成用 Unix 时间戳，避免引擎重建后会话误判
-增加推送去重和进度锁，防止重复推送
-修改原生端延迟重试逻辑，最多重试12次间隔120ms
-新增测试用例验证推送失败后重试成功逻辑
-from :2799
-commit refs/heads/rust-local-force
-mark :2801
-author vcexml <3356141621@qq.com> 1793942050 +0800
-committer vcexml <3356141621@qq.com> 1793942050 +0800
-data 269
-fix: 修复歌词信息未被检测到的元数据变更问题
-
-在比较媒体元数据变更时，新增对歌词信息（lyricInfo）的检查，因为 MediaMetadata.equals 不会比较 extras 中的内容，避免遗漏歌词变更导致的状态未更新问题。
-from :2800
-commit refs/heads/rust-local-force
-mark :2802
-author vcexml <3356141621@qq.com> 1793944919 +0800
-committer vcexml <3356141621@qq.com> 1793944919 +0800
-data 152
-fix(just_audio): 修复循环模式回写和元数据更新逻辑
-
-优化循环模式回写逻辑，复用原有扩展字段避免覆盖歌词等数据
-from :2801
-commit refs/heads/rust-local-force
-mark :2803
-author vcexml <3356141621@qq.com> 1794014935 +0800
-committer vcexml <3356141621@qq.com> 1794014935 +0800
-data 54
-docs: 更新 README.md 中的 Trendshift 徽章布局
-from :2802
-commit refs/heads/rust-local-force
-mark :2804
-author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793962781 +0000
-committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793962781 +0000
-data 32
-chore: update GitHub star trend
-from :2802
-commit refs/heads/rust-local-force
-mark :2805
-author vcexml <3356141621@qq.com> 1794015145 +0800
-committer vcexml <3356141621@qq.com> 1794015145 +0800
-data 97
-Merge branch 'rust-local-two' of https://github.com/zzyoxml/private_md3music into rust-local-two
-from :2803
-merge :2804
-commit refs/heads/rust-local-force
-mark :2806
+mark :2797
 author Little-White3110 <Little-White3110@users.noreply.github.com> 1793970607 +0800
 committer Little-White3110 <Little-White3110@users.noreply.github.com> 1793970607 +0800
 data 613
@@ -29373,9 +29293,9 @@ fix(mcp): 按hash播放误用audio_id致声曲不符，移除跨域兜底并补�
   逐项回填封面/albumAudioId/albumId，播放/入队/详情三工具共用
 - md3_add_song_to_playlist 透传补齐后详情，歌单 mixsongid 不再错值入库
 - 新增 models/mcp 定向回归共 12 项，含 issue 复现 hash 端到端用例
-from :2797
+from :2796
 commit refs/heads/rust-local-force
-mark :2807
+mark :2798
 author Little-White3110 <Little-White3110@users.noreply.github.com> 1793982020 +0800
 committer Little-White3110 <Little-White3110@users.noreply.github.com> 1793982020 +0800
 data 412
@@ -29384,9 +29304,9 @@ feat: 添加车机下电落盘日志取证功能
 新增 CarPowerLogFile 类实现车机下电事件的落盘日志记录，避免进程内存环形缓冲随断电灭失导致的取证盲区。
 在 MediaSessionService 暂停逻辑、AudioPlaybackService 的媒体命令派发、车机广播注册及信号处理处补充落盘日志。
 新增 CarPowerLogFileTest 单测覆盖核心逻辑，确保功能稳定。
-from :2806
+from :2797
 commit refs/heads/rust-local-force
-mark :2808
+mark :2799
 author Little-White3110 <Little-White3110@users.noreply.github.com> 1793983163 +0800
 committer Little-White3110 <Little-White3110@users.noreply.github.com> 1793983163 +0800
 data 1539
@@ -29412,47 +29332,112 @@ Windows 实测 45 个 MCP 工具后跟进修复：
 - 测试：新增 9 项（listid 投影/过滤/空态提示/limit 钳制/create 回执），
   工具总数断言 37/14/39/44 → 38/15/40/45；test/modules/mcp +
   test/services/kugou_api 522 项全绿
-from :2807
+from :2798
 commit refs/heads/rust-local-force
-mark :2809
+mark :2800
 author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793876999 +0000
 committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793876999 +0000
 data 32
 chore: update GitHub star trend
-from :2797
+from :2796
 commit refs/heads/rust-local-force
-mark :2810
+mark :2801
+author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1793853385 +0800
+committer GitHub <noreply@github.com> 1793853385 +0800
+data 72
+Merge pull request #182 from Little-White3110/rust-local-two
+
+bug fixes
+from :2793
+merge :2794
+commit refs/heads/rust-local-force
+mark :2802
+author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1793866432 +0800
+committer GitHub <noreply@github.com> 1793866432 +0800
+data 81
+Merge pull request #183 from Little-White3110/rust-local-two
+
+排序算法修复
+from :2801
+merge :2796
+commit refs/heads/rust-local-force
+mark :2803
+author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793876510 +0000
+committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793876510 +0000
+data 32
+chore: update GitHub star trend
+from :2802
+commit refs/heads/rust-local-force
+mark :2804
 author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1793883934 +0800
 committer GitHub <noreply@github.com> 1793883934 +0800
 data 58
 Merge branch 'zzyoxml:rust-local-two' into rust-local-two
-from :2809
-merge :2799
+from :2800
+merge :2803
 commit refs/heads/rust-local-force
-mark :2811
+mark :2805
 author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793963218 +0000
 committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793963218 +0000
 data 32
 chore: update GitHub star trend
-from :2810
+from :2804
 commit refs/heads/rust-local-force
-mark :2812
+mark :2806
+author vcexml <3356141621@qq.com> 1793942029 +0800
+committer vcexml <3356141621@qq.com> 1793942029 +0800
+data 379
+feat: 歌词信息推送增加重试机制和会话生成控制
+
+实现 tryUpdateLyricInfo 方法，支持原生端失败后重试
+添加会话生成用 Unix 时间戳，避免引擎重建后会话误判
+增加推送去重和进度锁，防止重复推送
+修改原生端延迟重试逻辑，最多重试12次间隔120ms
+新增测试用例验证推送失败后重试成功逻辑
+from :2803
+commit refs/heads/rust-local-force
+mark :2807
+author vcexml <3356141621@qq.com> 1793942050 +0800
+committer vcexml <3356141621@qq.com> 1793942050 +0800
+data 269
+fix: 修复歌词信息未被检测到的元数据变更问题
+
+在比较媒体元数据变更时，新增对歌词信息（lyricInfo）的检查，因为 MediaMetadata.equals 不会比较 extras 中的内容，避免遗漏歌词变更导致的状态未更新问题。
+from :2806
+commit refs/heads/rust-local-force
+mark :2808
+author vcexml <3356141621@qq.com> 1793944919 +0800
+committer vcexml <3356141621@qq.com> 1793944919 +0800
+data 152
+fix(just_audio): 修复循环模式回写和元数据更新逻辑
+
+优化循环模式回写逻辑，复用原有扩展字段避免覆盖歌词等数据
+from :2807
+commit refs/heads/rust-local-force
+mark :2809
+author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793962781 +0000
+committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1793962781 +0000
+data 32
+chore: update GitHub star trend
+from :2808
+commit refs/heads/rust-local-force
+mark :2810
 author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1793968449 +0800
 committer GitHub <noreply@github.com> 1793968449 +0800
 data 58
 Merge branch 'zzyoxml:rust-local-two' into rust-local-two
-from :2811
-merge :2804
+from :2805
+merge :2809
 commit refs/heads/rust-local-force
-mark :2813
+mark :2811
 author Little-White3110 <Little-White3110@users.noreply.github.com> 1793987536 +0800
 committer Little-White3110 <Little-White3110@users.noreply.github.com> 1793987536 +0800
 data 106
 Merge branch 'rust-local-two' of https://github.com/Little-White3110/private_md3music into rust-local-two
-from :2808
-merge :2812
+from :2799
+merge :2810
 commit refs/heads/rust-local-force
-mark :2814
+mark :2812
 author Little-White3110 <Little-White3110@users.noreply.github.com> 1793989725 +0800
 committer Little-White3110 <Little-White3110@users.noreply.github.com> 1793989725 +0800
 data 833
@@ -29469,9 +29454,9 @@ feat(player): 播放页长按歌名/歌手·专辑复制完整歌曲信息
 - 两套播放页 _copySongInfoToClipboard 复用 _resolveMatchedSong：
   本地/云盘命中匹配记忆时用在线元数据，与专辑跳转同口径
 - 新增 formatSongFullCopyText 单元测试 13 项全过
-from :2813
+from :2811
 commit refs/heads/rust-local-force
-mark :2815
+mark :2813
 author Little-White3110 <Little-White3110@users.noreply.github.com> 1793990746 +0800
 committer Little-White3110 <Little-White3110@users.noreply.github.com> 1793990746 +0800
 data 678
@@ -29483,23 +29468,381 @@ feat(player): 播放与输出面板输出页新增 USB 独占入口
 - 点开关外行体进入歌曲信息页（二级界面），返回后面板保持打开
 - 安卓 ⋯ 菜单移除「歌曲信息」入口（!supportsUsbExclusive 门控，Windows/TV 保留）
 - 防回归测试：入口门控方向 + 托盘行位置/置灰/开关与行体分击用例
+from :2812
+commit refs/heads/rust-local-force
+mark :2814
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794034008 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794034008 +0800
+data 422
+fix: 修复关闭错峰起点时当前行随视口高度滞后的问题
+
+优化关闭「错峰从当前行上方开始」时的歌词级联延迟补偿逻辑，使当前行释放延迟恒为一步，不随视口高度、字号或机型浮动滞后。
+新增补偿计算逻辑，将当前行及以下整体前移补偿，上方行等比压缩保持剥离顺序，同时添加测试用 getter 与完整回归测试用例。
+from :2813
+commit refs/heads/rust-local-force
+mark :2815
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794037480 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794037480 +0800
+data 58
+perf: 优化歌词级联动画的计算逻辑提升性能
 from :2814
 commit refs/heads/rust-local-force
 mark :2816
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794049167 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794049167 +0800
+data 459
+feat(歌词): 新增关闭错峰起点时的预启动零滞后补偿逻辑
+
+新增预启动机制，关闭错峰起点模式时，在音频边界前提前登记行并推进时间线，实现当前行零滞后释放。同时新增固定窗口回落补偿，保证预测失效时当前行滞后不超过3倍步长，上方行压缩进预算窗口保持剥离顺序。更新设置页面说明与测试用例，覆盖预启动、回落补偿等场景的验证。
+from :2815
+commit refs/heads/rust-local-force
+mark :2817
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794053661 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794053661 +0800
+data 474
+feat: 添加预启动提前量微调功能
+
+新增了预启动提前量微调的配置项和持久化逻辑。在歌词动画设置页面添加了对应的滑块控件，仅在关闭从当前行错峰启动时显示该选项。同时修改了歌词视图的级联计算逻辑，加入了该微调值，用于给弹簧动画预留收敛时间，提升歌词滚动的流畅度。新增了完整的测试用例，验证该参数的默认值、范围限制和持久化行为。
+from :2816
+commit refs/heads/rust-local-force
+mark :2818
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794072100 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794072100 +0800
+data 345
+fix(歌词视图): 修复错峰滚动动画卡顿和预启动失效问题
+
+- 修复非逐字歌词停帧省电模式下平滑时钟冻结导致预启动窗口永不开启的问题
+- 修复边界切行时预启动状态被打断导致下方行整块拍平的卡顿问题
+- 更新测试用例验证修复效果，确保错峰动画平滑无跳变
+from :2817
+commit refs/heads/rust-local-force
+mark :2819
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794074081 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794074081 +0800
+data 356
+feat: 新增歌词动画预设管理功能
+
+- 新增歌词动画预设仓库实现，支持预设的保存、切换、重命名、删除
+- 支持预设的 JSON 导入导出，可从剪贴板导入或复制到剪贴板
+- 新增动画预设管理面板，提供直观的预设操作界面
+- 新增预设相关的单元测试，覆盖所有预设功能场景
+from :2818
+commit refs/heads/rust-local-force
+mark :2820
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794074905 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794074905 +0800
+data 285
+fix(lyrics): 修复间奏点结束预启动动画异常问题
+
+新增间奏边界时刻的占位投影计算方法，避免预启动时计入展开中的占位高度导致动画跳变
+新增对应测试用例验证修复效果，确保间奏结束到边界期间posY无回退和跳变
+from :2819
+commit refs/heads/rust-local-force
+mark :2821
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794076548 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794076548 +0800
+data 82
+refactor(apple_lyrics): 优化间奏占位滚动补偿逻辑并更新测试用例
+from :2820
+commit refs/heads/rust-local-force
+mark :2822
+author vcexml <3356141621@qq.com> 1794014935 +0800
+committer vcexml <3356141621@qq.com> 1794014935 +0800
+data 54
+docs: 更新 README.md 中的 Trendshift 徽章布局
+from :2808
+commit refs/heads/rust-local-force
+mark :2823
+author vcexml <3356141621@qq.com> 1794015145 +0800
+committer vcexml <3356141621@qq.com> 1794015145 +0800
+data 97
+Merge branch 'rust-local-two' of https://github.com/zzyoxml/private_md3music into rust-local-two
+from :2822
+merge :2809
+commit refs/heads/rust-local-force
+mark :2824
 author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1794027243 +0800
 committer GitHub <noreply@github.com> 1794027243 +0800
 data 72
 Merge pull request #184 from Little-White3110/rust-local-two
 
 bug fixes
-from :2805
-merge :2815
+from :2823
+merge :2813
 commit refs/heads/rust-local-force
-mark :2817
+mark :2825
+author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794047132 +0000
+committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794047132 +0000
+data 32
+chore: update GitHub star trend
+from :2824
+commit refs/heads/rust-local-force
+mark :2826
 author vcexml <3356141621@qq.com> 1794028747 +0800
 committer vcexml <3356141621@qq.com> 1794028747 +0800
 data 362
 fix: 调整 GitHub 网络重试策略为可变延迟并更新文档
 
 修改 Invoke-WithRetry 函数，将固定 2 秒延迟的 3 次重试改为使用可配置的延迟数组，依次等待 60s、120s、300s，适配网络偶发抖动场景；同步更新 common.ps1 中的函数注释和 build-and-test.md 文档，说明新的重试规则和自定义方式。
-from :2816
+from :2824
+commit refs/heads/rust-local-force
+mark :2827
+author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794046794 +0000
+committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794046794 +0000
+data 32
+chore: update GitHub star trend
+from :2826
+commit refs/heads/rust-local-force
+mark :2828
+author vcexml <3356141621@qq.com> 1794061168 +0800
+committer vcexml <3356141621@qq.com> 1794061260 +0800
+data 1209
+feat(lyrics): Windows 便携版歌词默认值改为实调值并以其中轴补全范围
+
+把便携版「歌词动画」「歌词显示」两处面板的参数固化为 Windows 默认值，
+并把每项滑块范围改为以该默认值为中轴、两侧等长可调，避免默认值贴在
+滑条某一端导致单侧几乎无可用行程：
+
+- 字号 50px(12~88)、行间距 0.8x(0.4~1.2)、字重 900(300~900 全档)
+- 非当前行缩放 0.60(0~1)、当前行位置 0.45(0.15~0.75)
+- 已播字上浮 1.7px(0~3.4)、间奏点 1.5/0.18/0.90(各按中轴对称)
+- 错峰上限 0(±400)、错峰步长 0(±150)、错峰衰减 1/1.00(0.5~1.5)
+- 辉光固定时长 500ms(100~900)、模糊 1.0(0.5~1.5)
+- 混色比例 0.15(0~0.30)、辉光强度 1.0(0.2~1.8)、阈值系数 1.2(0.6~1.8)
+
+实现方式是给每个参数增加 min/max/default*ForCurrentPlatform 三元组，
+load()/setter/reset() 与设置页滑块统一走平台 getter；非 Windows 分支
+一律回落到原有全局常量，安卓端行为完全不变。
+
+错峰上限/步长此前被当作「0 是物理下界」而只能单向调节，实际渲染判据为
+`elapsed >= lineDelay`，负延迟等价于立即释放，故左侧放开到负值。
+from :2827
+commit refs/heads/rust-local-force
+mark :2829
+author vcexml <3356141621@qq.com> 1794061175 +0800
+committer vcexml <3356141621@qq.com> 1794061260 +0800
+data 703
+fix(lyrics): 修复缩放归零时 factor 除零与离屏模糊矩阵退化
+
+两处仅在极端取值下暴露的缺陷，随默认值/范围放开后可能被触发：
+
+- WordRenderer.factor 的分母是 (activeScale - inactiveScale)。当用户把
+  非当前行缩放调到 1.0（与当前行等大）时分母为 0，raw 变成 NaN，
+  clamp 后 alpha 计算异常。改为分母接近 0 时退化为 1.0（按当前行观感）。
+- LyricLayout.inactiveScale 直接暴露用户值。范围放开到 0~1 后，缩放取
+  0 会让 canvas.scale(0) 的离屏模糊矩阵不可逆（黑屏/绘制异常）。对外
+  取值钳到极小正数 0.01，存储与设置页显示仍保留用户真实值。
+from :2828
+commit refs/heads/rust-local-force
+mark :2830
+author vcexml <3356141621@qq.com> 1794061183 +0800
+committer vcexml <3356141621@qq.com> 1794061260 +0800
+data 970
+test(lyrics): 断言默认值落在范围正中并适配平台化范围
+
+配合默认值/范围改为平台化，更新受影响的断言：
+
+- lyric_preferences_windows_defaults_test：重写为逐参数的「默认值 =
+  范围正中」断言，覆盖两处面板全部参数；字重因 900 是 FontWeight 上限
+  单独断言占满全档；新增行距脏值 9.0 的 clamp 用例。
+- 其余偏好测试的 clamp 目标改用 *ForCurrentPlatform getter；取样值确保
+  落在当前平台范围内且不等于默认值（避免同值早退跳过落盘）。
+- 设置页测试的「非默认值」取样改取范围端点，修正默认值变成下限后
+  取样失效的问题。
+- word_renderer_test：factor/alpha 断言改为按当前平台 inactiveScale
+  计算期望值，覆盖分母为 0 的退化分支；辉光强度上限断言改用平台 getter。
+
+8 个测试文件串行执行 212 项全通过（含 lyrics_view 行距 0.8 负留白回归）。
+from :2829
+commit refs/heads/rust-local-force
+mark :2831
+author vcexml <3356141621@qq.com> 1794068743 +0800
+committer vcexml <3356141621@qq.com> 1794068743 +0800
+data 821
+feat(lyrics): 错峰上限/步长与当前行位置改用新默认值并以中轴重排范围
+
+按便携版实调手感确定三项新默认，并把范围重新等分到两侧：
+
+- 错峰上限 0 -> 990ms，范围 0~1980（原 -400~400）
+- 错峰步长 0 -> 80ms，范围 0~160（原 -150~150）
+- 当前行位置 0.45 -> 0.35，范围 0.05~0.65（下沿由 0.15 放宽）
+
+错峰两项的左端仍取 0：渲染判据为 `elapsed >= lineDelay`，负延迟与 0
+同义（均立即释放），再往负方向拖没有额外效果，故把全部行程留给右端。
+990 两侧各 990ms，总跨度 1980 已贴近原全局上限 2000。
+
+测试同步：重置后断言三项等于当前平台默认且落在范围正中；mock 里的
+脏值 990 因已成为默认值而不再触发 clamp，改用真正越界的 2500。
+from :2830
+commit refs/heads/rust-local-force
+mark :2832
+author vcexml <3356141621@qq.com> 1794068753 +0800
+committer vcexml <3356141621@qq.com> 1794068753 +0800
+data 812
+docs: 新增歌词动画参数清单并补入口索引
+
+把便携版「歌词动画」「歌词显示」两处面板当前生效的默认值与滑块范围
+固化成文档，便于后续按图核对与改动前对照：
+
+- 记录两处面板共 17 个可调项的默认值/范围/SharedPreferences key
+- 说明「默认值=实调值」「范围以默认值为中轴」「仅 Windows 分支生效」
+  三条设计约定，以及字重等受平台语义限制无法居中的例外
+- 记录错峰三项的边界依据（负延迟与 0 同义、衰减按 1/x 计算）
+- 列出影响滑块显隐的关联开关、已保存值优先于默认值的生效方式
+- 附回归测试命令与设置页 widget 测试并行时的已知假失败
+
+AGENTS.md 仅在选读表补一行摘要+链接，遵守入口体积约束。
+from :2831
+commit refs/heads/rust-local-force
+mark :2833
+author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1794070349 +0800
+committer GitHub <noreply@github.com> 1794070349 +0800
+data 58
+Merge branch 'zzyoxml:rust-local-two' into rust-local-two
+from :2825
+merge :2832
+commit refs/heads/rust-local-force
+mark :2834
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794076819 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794076819 +0800
+data 106
+Merge branch 'rust-local-two' of https://github.com/Little-White3110/private_md3music into rust-local-two
+from :2821
+merge :2833
+commit refs/heads/rust-local-force
+mark :2835
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794077774 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794077774 +0800
+data 475
+feat: 新增歌词动画内置默认预设功能
+
+- 新增内置默认预设的定义与实现
+- 新增预设列表展示逻辑，包含内置预设和用户预设
+- 新增预设操作的限制逻辑，不可删除、重命名内置预设
+- 新增预设应用逻辑，应用内置预设时使用兜底参数
+- 新增预设保存、导入时的名称保留逻辑
+- 更新测试用例，覆盖内置预设相关场景
+- 更新设置页面UI，展示内置预设并限制操作
+from :2834
+commit refs/heads/rust-local-force
+mark :2836
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794232415 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794232415 +0800
+data 522
+feat: 新增小米 CarWith 车机互联支持，包括主题跟随与投屏歌词功能
+
+- 新增 CarWith 平台能力判断
+- 新增 CarWithService 单例管理车机连接态与深浅色
+- 新增车机主题跟随开关，支持连接车机时自动切换深浅色
+- 新增车机投屏逐句歌词开关，熄屏时继续推送歌词
+- 适配 just_audio 第三方库，修复车机歌词元数据传递问题
+- 新增设置页搜索索引与测试用例
+- 适配 MainActivity 与 AudioPlaybackService 注册车机通道
+from :2835
+commit refs/heads/rust-local-force
+mark :2837
+author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794134020 +0000
+committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794134020 +0000
+data 32
+chore: update GitHub star trend
+from :2835
+commit refs/heads/rust-local-force
+mark :2838
+author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794224867 +0000
+committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794224867 +0000
+data 32
+chore: update GitHub star trend
+from :2837
+commit refs/heads/rust-local-force
+mark :2839
+author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1794077944 +0800
+committer GitHub <noreply@github.com> 1794077944 +0800
+data 81
+Merge pull request #185 from Little-White3110/rust-local-two
+
+歌词动画优化
+from :2832
+merge :2835
+commit refs/heads/rust-local-force
+mark :2840
+author vcexml <3356141621@qq.com> 1794104656 +0800
+committer vcexml <3356141621@qq.com> 1794104656 +0800
+data 928
+feat(lyrics): 新增「流畅优先」内置预设并把默认预设更名为性能优先
+
+预设列表由单个内置项扩展为内置列表：
+
+- 新增「流畅优先」内置预设（只读）：错峰上限/步长归零、衰减 1.00、
+  非当前行缩放 0.60，取向是"切行零滞后、动画让位流畅"
+- 原「默认预设」更名为「性能优先」，副标题标注「完整动画」
+  （保留 defaultPresetName / defaultPreset / isDefaultPreset 作为别名，
+  旧引用与文档不会断）
+- 内置列表统一走 builtInPresets / isBuiltInPreset：应用、命中判定、
+  导出单条都遍历内置项；保存/重命名/导入统一拒绝占用两个保留名
+  （导入同名自动追加序号，如「性能优先 2」）
+- 副标题支持按名称注入说明（builtInPresetDescriptions），
+  当前仅性能优先追加「完整动画」
+
+不做范围改动；安卓端行为不变。
+from :2839
+commit refs/heads/rust-local-force
+mark :2841
+author vcexml <3356141621@qq.com> 1794110062 +0800
+committer vcexml <3356141621@qq.com> 1794110062 +0800
+data 77
+feat(lyric_preferences): 为 Android 平台应用相同的歌词配置参数
+from :2840
+commit refs/heads/rust-local-force
+mark :2842
+author vcexml <3356141621@qq.com> 1794124131 +0800
+committer vcexml <3356141621@qq.com> 1794124131 +0800
+data 103
+fix: 修复诊断日志插件缺少上下文导致的崩溃并新增历史进程退出和 crash 日志
+from :2841
+commit refs/heads/rust-local-force
+mark :2843
+author vcexml <3356141621@qq.com> 1794126048 +0800
+committer vcexml <3356141621@qq.com> 1794126048 +0800
+data 49
+fix(audio): 仅开启硬解后允许能力探测
+from :2842
+commit refs/heads/rust-local-force
+mark :2844
+author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794133712 +0000
+committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794133712 +0000
+data 32
+chore: update GitHub star trend
+from :2843
+commit refs/heads/rust-local-force
+mark :2845
+author github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794224452 +0000
+committer github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com> 1794224452 +0000
+data 32
+chore: update GitHub star trend
+from :2844
+commit refs/heads/rust-local-force
+mark :2846
+author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1794233006 +0800
+committer GitHub <noreply@github.com> 1794233006 +0800
+data 58
+Merge branch 'zzyoxml:rust-local-two' into rust-local-two
+from :2838
+merge :2845
+commit refs/heads/rust-local-force
+mark :2847
+author Little-White3110 <Little-White3110@users.noreply.github.com> 1794233033 +0800
+committer Little-White3110 <Little-White3110@users.noreply.github.com> 1794233033 +0800
+data 106
+Merge branch 'rust-local-two' of https://github.com/Little-White3110/private_md3music into rust-local-two
+from :2836
+merge :2846
+commit refs/heads/rust-local-force
+mark :2848
+author Little-White3110 <53994162+Little-White3110@users.noreply.github.com> 1794234764 +0800
+committer GitHub <noreply@github.com> 1794234764 +0800
+data 76
+Merge pull request #186 from Little-White3110/rust-local-two
+
+carwith适配
+from :2845
+merge :2847

@@ -392,6 +392,16 @@ class _AppleLyricsViewState extends State<AppleLyricsView>
   @visibleForTesting
   bool get lastSwitchWasFastForTest => _lastSwitchWasFast;
 
+  /// 本轮级联牵引起点（限幅后的视口顶部可见行）。仅测试用：
+  /// 验证关闭「错峰从当前行上方开始」时的当前行延迟补偿量推导。
+  @visibleForTesting
+  int get cascadeTopLineForTest => _cascadeTopLine;
+
+  /// 第 i 行级联延迟是否仍在等待期（未被释放）。仅测试用：
+  /// `true` = 仍被「按住等错峰」，`false` = 已释放交给弹簧回弹。
+  @visibleForTesting
+  bool cascadeLineHeldForTest(int i) => (_delayStartTimes[i] ?? -1) >= 0;
+
   /// 第 i 行 WordRenderer 上一次绘制算出的 sweep（扫光）前端位置（行内坐标）。
   ///
   /// 仅测试用：验证 [LyricFillMode.sweep] 下前端非负且随播放进度向右推进。
@@ -603,6 +613,35 @@ class _AppleLyricsViewState extends State<AppleLyricsView>
   /// 级联瀑布向上覆盖的可见行上限：起点不低于 currentLineIndex - K，
   /// 避免极端滚动/切歌跳变时起点过低拖出全屏。
   static const int _cascadeTopLimit = 8;
+
+  /// 关闭「错峰从当前行上方开始」时，上方行压缩的固定时间预算（步长倍数）。
+  ///
+  /// 仅作为**预启动回落路径**的压缩预算：预测失效（行间隔 < 预算、seek、
+  /// 暂停）时补偿把上方行等比压进 `[0, K×步长]` 窗口、当前行滞后恒为
+  /// K×步长（不随视口/设备变）。K=3 时 8 行窗口波浪 ≈30ms/行（60fps 约
+  /// 2 帧/行，肉眼可辨），当前行滞后 ≈240ms（Windows 步长 80ms）。预启动
+  /// 成功时不用此预算（见 [_cascadePreStartLine]）。
+  static const double _staggerCompWindowSteps = 3.0;
+
+  // ============== 关闭模式的级联预启动（消除当前行滞后） ==============
+
+  /// 预启动的目标行（下一行）。仅关闭模式且窗口期内 >= 0。
+  ///
+  /// 预测式预启动：下一行 startTime 已知，在 `T_next − L`（L = 提前量 =
+  /// min(视口顶部到下一行的原始累加, 延迟上限)）即提前执行滚动目标更新与
+  /// 级联登记，整条错峰时间线前移 L，音频边界切行时新当前行延迟恰好耗尽
+  /// ——零滞后，上方行以原始步长全速剥离（瀑布完整可见，不压缩）。
+  int _cascadePreStartLine = -1;
+
+  /// 活跃级联的时间线是否由预启动建立（true=时间线锚定在窗口起点，上方
+  /// 行已在窗口内逐行剥离，推进循环按真实时钟释放、回落压缩补偿不生效；
+  /// false=切行帧才登记，需按固定预算压缩补偿）。
+  /// 预启动首帧写入，下一次切行（消费后置 false）或切歌清理时重置，
+  /// 不跨轮泄漏。
+  bool _cascadeTimelinePreStarted = false;
+
+  /// 上次预启动评估的目标行，用于判定目标变化（seek/回退）时作废重评估。
+  int _lastPreStartTarget = -1;
 
   // ============== 快速连切兜底 ==============
 
@@ -1069,6 +1108,18 @@ class _AppleLyricsViewState extends State<AppleLyricsView>
     final prev = _authorityTimeMs;
     _readAuthorityFrom(listenable);
     if (_authorityTimeMs == prev) return;
+    // 无驱动源产帧时（非逐字歌词播放中「收敛停帧」省电：Ticker 已停、eco Timer
+    // 未绑定）帧时钟不推进，[_onTick] 里的平滑校正拿不到 dt（重启后的首帧
+    // dt=0）→ [_smoothPosMs] 会长时间冻结（实测可滞后数秒），而预启动窗口按
+    // `leadMs = nextStart − smoothPos` 判定，冻结会让窗口**永不开启**：预启动
+    // 完全失效、每个边界退化为回落路径把视口行重新按住 → 换行"打断错峰"
+    // （真机实录 QQ20261107-230339；此时 smoothPos 实测可滞后数秒）。
+    // 此刻没有任何帧在渲染，平滑（为逐字边界防抖而设）没有意义：直接对齐权威，
+    // 保证唤醒出帧时时钟就是真实播放位置。
+    if (!_isTickerRunning && !_ecoDriverBound) {
+      _smoothPosMs = _authorityTimeMs.toDouble();
+      _lastAuthorityPosMs = _authorityTimeMs;
+    }
     if (widget.isPlaying) {
       // 统一走 _syncEcoDriver：锁定 → 确保 60fps Timer；解锁/关闭 → Ticker 满帧
       _syncEcoDriver();
@@ -1398,6 +1449,10 @@ class _AppleLyricsViewState extends State<AppleLyricsView>
       // 新歌行数不同，旧索引无意义，直接整体清空。
       _perLineSprings.clear();
       _delayStartTimes.clear();
+      // 切歌后旧行号失效：预启动窗口状态一并作废（目标行按新歌词重评）。
+      _cascadePreStartLine = -1;
+      _lastPreStartTarget = -1;
+      _cascadeTimelinePreStarted = false;
       // 切歌后首次定位直接瞬移到新歌当前行（避免从旧歌曲的长距离滚动）
       _scrollController.resetInitialJump();
       // 切歌诊断日志：定位"切歌后省电模式失效须重新开关"问题用（低频事件）
@@ -1520,6 +1575,42 @@ class _AppleLyricsViewState extends State<AppleLyricsView>
       lo = l.clamp(0, len - 1);
     }
     final int floor = math.max(0, _currentLineIndex - _cascadeTopLimit);
+    return (lo > floor) ? lo : floor;
+  }
+
+  /// [_computeCascadeTopLine] 的参数化版本：以 [anchorLine] 为当前行评估
+  /// 级联起点（限幅同样相对 anchorLine），供预启动用「下一行」视角提前
+  /// 计算提前量（切行尚未发生时 _currentLineIndex 仍是旧行）。
+  int _computeCascadeTopLineFor(int anchorLine) {
+    final int len = widget.lines.length;
+    if (len == 0) return 0;
+    final double viewportH = _painter?.viewportHeight ?? 0;
+    int lo;
+    if (viewportH <= 0 || _lineTops.isEmpty) {
+      lo = math.max(0, anchorLine - _cascadeTopLimit);
+    } else {
+      final double posY = _scrollController.posY;
+      int l = 0, h = len;
+      while (l < h) {
+        final int mid = (l + h) ~/ 2;
+        final double fs = LyricLayout.fontSize(context);
+        final double top = mid < _lineTops.length
+            ? _lineTops[mid]
+            : mid * fs * LyricLayout.lineHeight;
+        final double lineH = mid < _lineHeights.length
+            ? _lineHeights[mid]
+            : fs * LyricLayout.lineHeight;
+        final double y =
+            top + posY + _interludeOffsetBefore(mid) + _transDeltaBefore(mid);
+        if (y + lineH < -LyricLayout.overscanPx) {
+          l = mid + 1;
+        } else {
+          h = mid;
+        }
+      }
+      lo = l.clamp(0, len - 1);
+    }
+    final int floor = math.max(0, anchorLine - _cascadeTopLimit);
     return (lo > floor) ? lo : floor;
   }
 
@@ -1757,19 +1848,184 @@ class _AppleLyricsViewState extends State<AppleLyricsView>
         final next = widget.lines[_currentLineIndex + 1];
         intervalMs = next.startTime - current.endTime;
       }
-      _scrollController.setCurrentLine(
-        _currentLineIndex,
-        // 暂停时视为 seeking 模式（固定弹簧参数），播放时用动态参数
-        isSeeking: !widget.isPlaying,
-        lineHeight: currentLineHeight,
-        intervalMs: intervalMs,
-        lineTop: currentLineTop,
-        // 间奏激活或占位还在收起时都用柔和 spring（stiffness=40, damping=10），
-        // 让歌词跟随占位收起时有阻尼感而非瞬移
-        isInterludeActive: _interludeExpandProgress > 0.01,
-        // 快速连切兜底：直接切到新行位置，不做弹簧过渡
-        snap: fastLineSwitch,
-      );
+      // 预启动窗口活跃时跳过本帧的 setCurrentLine：步骤 2.5 已把滚动目标
+      // 推进到下一行（参数同款、幂等），此处再按当前行设置会每帧把目标
+      // 拽回旧位置——弹簧目标以 60fps 在两行间翻转（posY 振荡 ±一行距），
+      // 并连锁触发 seek 跳变保护（单帧跳变 > 行高 → 级联全释放），表现
+      // 为错峰动画"一阵一顿"的拉面条观感（真机实录见 QQ20261107-201300）。
+      // 边界切行后 _cascadePreStartLine 已被消费置 -1，本条件自然失效，
+      // 步骤 2 恢复接管（参数与预启动一致，无跳变）。
+      final bool preStartTargetActive =
+          _cascadePreStartLine == _currentLineIndex + 1;
+      if (!preStartTargetActive) {
+        _scrollController.setCurrentLine(
+          _currentLineIndex,
+          // 暂停时视为 seeking 模式（固定弹簧参数），播放时用动态参数
+          isSeeking: !widget.isPlaying,
+          lineHeight: currentLineHeight,
+          intervalMs: intervalMs,
+          lineTop: currentLineTop,
+          // 间奏激活或占位还在收起时都用柔和 spring（stiffness=40, damping=10），
+          // 让歌词跟随占位收起时有阻尼感而非瞬移
+          isInterludeActive: _interludeExpandProgress > 0.01,
+          // 快速连切兜底：直接切到新行位置，不做弹簧过渡
+          snap: fastLineSwitch,
+        );
+      }
+    }
+
+    // 2.5 关闭「错峰从当前行上方开始」时的预启动（仅播放中、关闭模式、
+    // 非切行帧、非用户滚动）。下一行 startTime 已知：在 `T_next − L` 进入
+    // 预启动窗口（L = min(D_raw, 延迟上限)，D_raw = 视口顶部行到下一行的
+    // 原始累加），**当场完成级联登记**（时间线锚定窗口起点）并提前推进
+    // 滚动目标：上方行在窗口内以原始步长逐行剥离（瀑布提前可见、不压缩），
+    // 新当前行恰在音频边界释放（零滞后），下方行边界后按相对节奏跟随。
+    // 预测失效（剩余时间不足 / seek / 暂停 / 拖动 / 快连切）不预启动：
+    // 切行帧回落到固定窗口压缩补偿（恒 K×步长滞后，仍不随视口变）。
+    // 切行帧整体跳过：本行的登记/回落判定在步骤 8，此处评估会覆盖窗口状态。
+    if (_currentLineIndex == _previousLineIndex &&
+        _currentLineIndex >= 0 &&
+        widget.isPlaying &&
+        !fastLineSwitch &&
+        !_scrollController.isUserScrolling &&
+        !_scrollController.isWaitingForAutoReturn) {
+      final bool staggerOff =
+          !LyricPreferences.instance.staggerFromCurrentLine;
+      final int nextLine = _currentLineIndex + 1;
+      // 间奏占位展开/收起期间不预启动：占位（≈1 行）到音频边界前 250ms 才开始
+      // 收起，而布局此刻正由"下方行上移补位"收缩；此时若预先把滚动目标推到
+      // 下一行，会在收起动作之外额外叠加一整行的上移 —— 观感即间奏点结束动画
+      // 「向上飞很高才收起」（真机 QQ20261107）。该边界的位移由占位收起动画
+      // 主导（~750ms，与圆点消失同步），不需要预滚动补偿。
+      if (staggerOff &&
+          _interludeExpandProgress <= 0.01 &&
+          nextLine < widget.lines.length) {
+        // 目标行变化（正常推进 / seek 跳行 / 回退）：作废旧窗口重新评估。
+        if (nextLine != _lastPreStartTarget) {
+          _lastPreStartTarget = nextLine;
+          _cascadePreStartLine = -1;
+        }
+        final int nextStartMs = widget.lines[nextLine].startTime;
+        final int leadMs = nextStartMs - _smoothPosMs.round();
+        // 真机手感微调：级联比音频边界再提前这么多毫秒，给当前行弹簧留出
+        // 收敛时间（弹簧到位 ≠ 收敛，边界时刻可能还在收敛尾巴上）。0 = 恰
+        // 在边界释放。提前量上界与窗口条件同步放大，保证微调总能生效。
+        final int biasMs = LyricPreferences.instance.preStartBiasMs.round();
+        // 廉价预过滤：needMs ≤ 延迟上限 + 微调，lead 超出必然不在窗口内，
+        // 跳过二分（_computeCascadeTopLineFor）——预启动只在每个行边界前
+        // 至多（上限+微调）ms 内做 O(log N) 评估，其余帧零开销。
+        final int maxDelayMs =
+            LyricPreferences.instance.cascadeMaxDelayMs.round();
+        // 窗口「粘住」状态必须最先求值：真机 positionStream 约 200ms 一次，
+        // [_smoothPosMs] 逐帧按帧时钟前进、收到权威值后指数逼近；逐帧 lead
+        // 会在窗口阈值附近正负抖动，**权威翻行比平滑时钟晚最多 ~200ms**，
+        // lead 甚至会短暂变负。旧实现每抖动一次就作废窗口
+        // （`_cascadePreStartLine = -1`）：滚动目标被步骤 2 拽回旧行、级联
+        // 换锚点重登记 —— 视觉即每个边界"拉一下再回弹"（真机实录
+        // QQ20261107-230339）。粘住后窗口只在切行帧消费，或被下面明确的
+        // 硬作废条件（seek/暂停/拖动/快连切/换目标行）终止。
+        final bool alreadyInWindow = _cascadePreStartLine == nextLine;
+        if (alreadyInWindow ||
+            (leadMs > 0 && leadMs <= maxDelayMs + biasMs)) {
+          final int needMs = math.min(
+            math.max(0, nextLine - _computeCascadeTopLineFor(nextLine)) *
+                LyricPreferences.instance.cascadeBaseStepMs.round(),
+            maxDelayMs,
+          ) + biasMs;
+          // 进入窗口：剩余时间恰好放得下提前量（进入时 lead ≈ needMs，此后
+          // 逐帧递减）。needMs=bias（下一行即视口顶）时仍有微调收益。
+          if (leadMs <= needMs || alreadyInWindow) {
+            final bool firstEntry = !alreadyInWindow;
+            _cascadePreStartLine = nextLine;
+            if (firstEntry) {
+              // 进入窗口首帧：**接管式登记**。时间线锚定此刻——行 i 在
+              // `此刻 + delay_i` 释放，当前行（delay = L）恰在边界释放。
+              // 只接管「仍按住」的行：先用旧基准结算抵消量（视觉位置
+              // 不变），再按新锚重登记；**正在回弹途中的行绝不碰**（弹回
+              // 动画进行中，重按会把它们冻结在半空——错峰"一阵一顿"的
+              // 直接来源），它们随内容自然滚走。已静止行无残留偏移，
+              // 无需处理。开窗登记范围 [top, nextLine+overscan)。
+              final double pendingHold = _cascadePosY - _scrollController.posY;
+              if (pendingHold.abs() > 0.01) {
+                for (final k in _delayStartTimes.keys.toList()) {
+                  if (_delayStartTimes[k]! >= 0) {
+                    final s = _perLineSpringFor(k);
+                    s.setPosition(s.position + pendingHold, 0);
+                    s.setTarget(0);
+                  }
+                }
+              }
+              _cascadeTopLine = _computeCascadeTopLineFor(nextLine);
+              _cascadePosY = _scrollController.posY;
+              // 与推进循环同口径：帧时钟（跨 Ticker 重启单调），见 nowMs 处注释。
+              final double nowEntry = _frameClockMs;
+              final int regEnd =
+                  math.min(widget.lines.length, nextLine + _overscan);
+              for (int i = _cascadeTopLine; i < regEnd; i++) {
+                final double s0 = _perLineSprings[i]?.position ?? 0.0;
+                // 只重登记按住行与静止行；回弹中（已释放且未收敛）保持原状。
+                final bool wasHeld = (_delayStartTimes[i] ?? -1) >= 0;
+                if (wasHeld ||
+                    s0.abs() <= 0.01 ||
+                    (_perLineSprings[i]?.isSettled ?? true)) {
+                  _delayStartTimes[i] = nowEntry;
+                }
+              }
+              _delayStartTimes.removeWhere((k, _) => k < _cascadeTopLine);
+              _cascadeTimelinePreStarted = true;
+            }
+            // 提前推进滚动目标（幂等：setCurrentLine 同参重入无副作用），
+            // 弹簧参数用「下一行的 intervalMs」才能拿到正确的动态 stiffness。
+            final fontSizePre = LyricLayout.fontSize(context);
+            final mainLineHeightPre = fontSizePre * LyricLayout.lineHeight;
+            final int nextIntervalMs;
+            if (nextLine < widget.lines.length - 1) {
+              nextIntervalMs =
+                  widget.lines[nextLine + 1].startTime -
+                  widget.lines[nextLine].endTime;
+            } else {
+              nextIntervalMs = 0;
+            }
+            _scrollController.setCurrentLine(
+              nextLine,
+              isSeeking: false,
+              lineHeight:
+                  (nextLine < _lineHeights.length
+                      ? _lineHeights[nextLine]
+                      : mainLineHeightPre) +
+                  _transExtraHeightFor(nextLine),
+              intervalMs: nextIntervalMs,
+              lineTop:
+                  (nextLine < _lineTops.length
+                      ? _lineTops[nextLine]
+                      : nextLine * mainLineHeightPre) +
+                  _interludeOffsetBefore(nextLine) +
+                  _transDeltaBefore(nextLine),
+              // 预启动推进不用柔和间奏参数：占位收起期间恰逢预启动时，
+              // 用动态参数保证边界时刻弹簧状态与正常切行一致。
+              isInterludeActive: false,
+              snap: false,
+            );
+          } else if (_cascadePreStartLine >= 0) {
+            // 窗口外（未进入 / seek 回退拉远）：作废，切行帧走回落补偿。
+            _cascadePreStartLine = -1;
+          }
+        } else if (_cascadePreStartLine >= 0) {
+          _cascadePreStartLine = -1;
+        }
+      } else if (_cascadePreStartLine >= 0) {
+        // 无下一行（结尾/间奏）或开关切回开启：作废未消费的窗口。
+        _cascadePreStartLine = -1;
+        _lastPreStartTarget = -1;
+      }
+    } else if (_cascadePreStartLine >= 0 &&
+        _currentLineIndex != _previousLineIndex &&
+        !fastLineSwitch) {
+      // 切行帧（非快连切）：保留窗口状态给步骤 8 消费，此处不动。
+    } else if (_cascadePreStartLine >= 0) {
+      // 暂停 / 用户拖动 / 快连切：预启动状态作废。
+      _cascadePreStartLine = -1;
+      _lastPreStartTarget = -1;
     }
     _scrollController.tick(dt);
 
@@ -2032,14 +2288,36 @@ class _AppleLyricsViewState extends State<AppleLyricsView>
           s.setPosition(0, 0);
         }
         _cascadePosY = _scrollController.posY;
+        // 预启动状态一并作废（快连切路径不消费预启动时间线）。
+        _cascadePreStartLine = -1;
+        _lastPreStartTarget = -1;
+        _cascadeTimelinePreStarted = false;
       } else {
-        final double now = _lastElapsed.inMicroseconds / 1000.0;
-        _cascadeTopLine = _computeCascadeTopLine(); // 缓存起点（含限幅）
+        // 与推进循环同口径：帧时钟（跨 Ticker 重启单调），见 nowMs 处注释。
+        final double now = _frameClockMs;
+        // 预启动时间线在切行帧继续存活：仍在等待期的行属于本轮流线
+        // （新当前行下方的行尚待逐行释放），**既不能结算释放**（会把下方
+        // 波浪在边界一次性拍平——所有等待行同时收到整个窗口期累积的
+        // 抵消量并一齐弹回，错峰在每个边界被打断成"一阵一阵"），**也不能
+        // 重置抵消基准**（锚点保持在预启动窗口起点，下方行"钉在预滚动前
+        // 位置"的语义才连续，释放时各自从钉住位置按延迟弹回）。锚点在
+        // 下一轮流线事件（下一次预启动入窗 / 非预启动切行）时随结算重置。
+        final bool preStartAlive =
+            !LyricPreferences.instance.staggerFromCurrentLine &&
+            _cascadeTimelinePreStarted;
+        // 级联起点跟随预启动时间线：切行帧若重算为新当前行视角，起点下移
+        // 会让下方 removeWhere 清掉仍按住的行（时间线被拦腰截断）。保持
+        // 窗口起点锚不动，等本轮流线走完由下一次事件重置。
+        if (!preStartAlive) {
+          _cascadeTopLine = _computeCascadeTopLine();
+        }
         // 上一轮仍在等待期的行：先用旧基准把抵消量结算进弹簧基数，再重置基准。
         // 快歌切换间隔小于等待期（≤280ms）时，若直接重置 _cascadePosY，
         // 这些行的有效偏移会瞬间回跳一个 holdOffset —— 又一次瞬移。
         final double pendingHold = _cascadePosY - _scrollController.posY;
-        if (pendingHold.abs() > 0.01 && _delayStartTimes.isNotEmpty) {
+        if (!preStartAlive &&
+            pendingHold.abs() > 0.01 &&
+            _delayStartTimes.isNotEmpty) {
           for (final k in _delayStartTimes.keys.toList()) {
             if (_delayStartTimes[k]! >= 0) {
               final s = _perLineSpringFor(k);
@@ -2051,30 +2329,48 @@ class _AppleLyricsViewState extends State<AppleLyricsView>
         }
         // 记录抵消基准：等待期内该行偏移 = 本值 − 当前 posY，即停在切换瞬间的位置。
         // 本帧两者相等 → 抵消量为 0 → 有效偏移等于上一帧残留，不存在瞬时位移。
-        _cascadePosY = _scrollController.posY;
+        if (!preStartAlive) {
+          _cascadePosY = _scrollController.posY;
+        }
         final int startI = _cascadeTopLine;
         final int endI = math.min(
           widget.lines.length,
           _currentLineIndex + _overscan,
         );
-        // 只登记延迟起点，**绝不 setPosition 播种偏移**：
-        // 旧实现 `spring.setPosition(offset, 0)` 是瞬时赋值，切换帧整块歌词
-        // 会先向下抖最多一个行距的固定比例、再逐行弹回，形成"两段动画 + 瞬移"。
-        // 上一轮残留的弹簧值原样保留，释放时叠加进新起点，保证连续。
-        // 「错峰从当前行开始」开启时：错峰起点 = 当前行再往上一行（上一行
-        // delay=0 领头回位，当前行带一步延迟跟随），其上方行立即释放（-1），
-        // 不参与「按住等错峰」，随全局滚动同步回位。首行时起点即当前行。
-        if (LyricPreferences.instance.staggerFromCurrentLine) {
-          final int staggerStartLine = math.max(0, _currentLineIndex - 1);
-          for (int i = startI; i < endI; i++) {
-            _delayStartTimes[i] = i < staggerStartLine ? -1 : now;
-          }
+        // 关闭模式 + 预启动命中：时间线已在窗口起点锚定（步骤 2.5 首帧登记，
+        // 上方行在窗口内逐行剥离、新当前行恰在边界释放）——本帧只作废窗口
+        // 状态，**绝不重登记**（重登记会把已剥离到一半的上方行重新按住）。
+        // 预启动未命中（间隔 ≤ 提前量 / seek / 暂停 / 快连切）：切行帧登记，
+        // 由推进循环按固定窗口压缩补偿（回落路径，滞后恒 K×步长）。
+        if (!LyricPreferences.instance.staggerFromCurrentLine &&
+            _cascadePreStartLine == _currentLineIndex) {
+          _cascadePreStartLine = -1;
+          _lastPreStartTarget = -1;
+          // _cascadeTimelinePreStarted 保持 true：推进循环按真实时钟继续
+          // 释放等待期行，回落补偿全程不生效。
         } else {
-          for (int i = startI; i < endI; i++) {
-            _delayStartTimes[i] = now;
+          // 只登记延迟起点，**绝不 setPosition 播种偏移**：
+          // 旧实现 `spring.setPosition(offset, 0)` 是瞬时赋值，切换帧整块歌词
+          // 会先向下抖最多一个行距的固定比例、再逐行弹回，形成"两段动画 + 瞬移"。
+          // 上一轮残留的弹簧值原样保留，释放时叠加进新起点，保证连续。
+          // 「错峰从当前行开始」开启时：错峰起点 = 当前行再往上一行（上一行
+          // delay=0 领头回位，当前行带一步延迟跟随），其上方行立即释放（-1），
+          // 不参与「按住等错峰」，随全局滚动同步回位。首行时起点即当前行。
+          if (LyricPreferences.instance.staggerFromCurrentLine) {
+            final int staggerStartLine = math.max(0, _currentLineIndex - 1);
+            for (int i = startI; i < endI; i++) {
+              _delayStartTimes[i] = i < staggerStartLine ? -1 : now;
+            }
+          } else {
+            for (int i = startI; i < endI; i++) {
+              _delayStartTimes[i] = now;
+            }
           }
+          _cascadeTimelinePreStarted = false;
         }
-        // 清除起点以下(视口外/限幅外)与过旧的延迟记录
+        // 清除起点以下(视口外/限幅外)与过旧的延迟记录。预启动存活时锚点
+        // 未动（startI 即窗口起点），removeWhere 无害；非预启动路径按新
+        // 起点清理。
         _delayStartTimes.removeWhere((k, _) => k < startI);
       }
     }
@@ -2110,21 +2406,69 @@ class _AppleLyricsViewState extends State<AppleLyricsView>
           : _cascadeTopLine;
       double delayMs = 0;
       double baseStepMs = cascadeBaseStep;
-      final double nowMs = _lastElapsed.inMicroseconds / 1000.0;
+      // —— 关闭「错峰从当前行上方开始」时的回落压缩补偿（固定窗口） ——
+      // 预启动（_cascadeTimelinePreStarted=true）已把时间线整体前移：当前
+      // 行延迟在边界时刻恰好耗尽，零滞后、上方行全速瀑布，无需任何压缩。
+      // 仅预启动失效（间隔 ≤ 预算 / seek / 暂停）时走本回落：把滞后钉在
+      // 固定预算 K×步长（不随视口/设备变），上方行压缩进该窗口：
+      //   D_raw = (C−T)×步长（不封顶的原始累加值）；
+      //   D_raw ≤ 预算（小视口/行少）：不压缩，与历史行为逐位一致；
+      //   D_raw > 预算：compMs = D_raw − 预算 → 当前行及以下整体前移到
+      //   预算处（上限照常作用于补偿后的值），下方行相对节奏不变；
+      //   aboveScale = 预算 / D_raw → 上方行等比压缩进 [0, 预算] 窗口。
+      // 上方行必须一并压缩：等待期行被抵消量钉在切换瞬间位置，若只提前
+      // 释放当前行而上方行仍被钉住，当前行回位时会向上叠进上方行（布局
+      // 必然重叠）。压缩后自上而下剥离顺序保持、且严格早于当前行释放。
+      // 每帧用实时偏好重算，切行中途调步长/上限滑块也口径一致。
+      double currentCompMs = 0;
+      double aboveScale = 1.0;
+      if (!staggerFromCurrent && !_cascadeTimelinePreStarted) {
+        final double windowMs = _staggerCompWindowSteps * cascadeBaseStep;
+        final double rawDelayMs =
+            math.max(0, _currentLineIndex - _cascadeTopLine) * cascadeBaseStep;
+        if (rawDelayMs > windowMs) {
+          currentCompMs = rawDelayMs - windowMs;
+          aboveScale = windowMs / rawDelayMs;
+        }
+      }
+      // 时间线用**帧时钟**而非 Ticker 的 `elapsed`：非逐字歌词播放中会「收敛
+      // 停帧」省电，Ticker 每次重启都把 elapsed 归零（见 _startTickerIfNeeded），
+      // 跨重启用 elapsed 做差会得到负值 → 等待行的延迟永远算不满、被抵消量
+      // 钉在原地数秒不随滚动走（表现为该行悬浮/与相邻行重叠，观感像"上飞"）。
+      // _frameClockMs 逐帧累加 dt，跨 Ticker 重启保持单调。
+      final double nowMs = _frameClockMs;
       // 抵消量：切换帧为 0，随全局 posY 上移而增大（= 该行"本该已经走掉"的距离）
       final double holdOffset = _cascadePosY - posYNow;
+      // 上方行压缩仅在「关闭模式且补偿生效」（aboveScale != 1.0）时发生，
+      // 折叠成局部布尔：循环内只查局部变量，避免每行重复判断偏好与乘法。
+      final bool scaleAboveLines = aboveScale != 1.0;
       for (int i = springStartI; i < springEndI; i++) {
-        final double lineDelay = math.min(delayMs, cascadeMaxDelay);
+        // 关闭模式补偿：到达当前行时先一次性前移 currentCompMs（使当前行
+        // 延迟恒为一步、对齐开启模式基线），再参与本行的释放判定；当前行
+        // 以下以补偿后的基准继续累加，相对节奏不变（上限 min(·, maxDelay)
+        // 照常作用于补偿后的值）。开启模式 currentCompMs=0，减法恒等。
+        if (i == _currentLineIndex) {
+          delayMs -= currentCompMs;
+        }
         final double? start = _delayStartTimes[i];
         final bool held = start != null && start >= 0;
-        if (held && (nowMs - start) >= lineDelay) {
-          // 延迟到期 → 释放：弹簧起点 = 残留值 + 当前抵消量，目标 0。
-          // 从抵消量接着弹回，而不是从 0 重新跳过去，保证整条曲线连续。
-          final s = _perLineSpringFor(i);
-          s.setPosition(s.position + holdOffset, 0);
-          s.setTarget(0);
-          _delayStartTimes[i] = -1;
-        } else if (!held) {
+        if (held) {
+          // 惰性求值：lineDelay（min + 条件乘法）只有等待期行会消费，
+          // 不为已释放行白算——稳态帧（绝大多数帧）整段少一次 min 与
+          // 条件乘法，基准实测比无补偿的原版还快（见 tmp/bench_cascade）。
+          final double effectiveDelayMs =
+              scaleAboveLines && i < _currentLineIndex
+                  ? delayMs * aboveScale
+                  : delayMs;
+          if ((nowMs - start) >= math.min(effectiveDelayMs, cascadeMaxDelay)) {
+            // 延迟到期 → 释放：弹簧起点 = 残留值 + 当前抵消量，目标 0。
+            // 从抵消量接着弹回，而不是从 0 重新跳过去，保证整条曲线连续。
+            final s = _perLineSpringFor(i);
+            s.setPosition(s.position + holdOffset, 0);
+            s.setTarget(0);
+            _delayStartTimes[i] = -1;
+          }
+        } else {
           // 已释放（或从未参与级联）：正常推进弹簧直到收敛。
           // 等待期内刻意不 tick —— 弹簧冻结在残留基数上，作为释放时的起点。
           _perLineSprings[i]?.tick(dt);

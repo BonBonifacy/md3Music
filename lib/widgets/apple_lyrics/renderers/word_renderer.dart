@@ -560,10 +560,12 @@ class WordRenderer {
   /// 当前 scale 对应的 factor（0~1）。
   ///
   /// 公式：`factor = clamp01((scale - inactiveScale) / (activeScale - inactiveScale))`
+  /// 当 inactiveScale == activeScale（如 Windows 便携版默认关闭缩放）时分母为 0，
+  /// 退化为 1.0（所有行等大，按当前行观感处理）。
   double get factor {
-    final raw =
-        (_scale - LyricLayout.inactiveScale) /
-        (LyricLayout.activeScale - LyricLayout.inactiveScale);
+    final denom = LyricLayout.activeScale - LyricLayout.inactiveScale;
+    if (denom.abs() < 1e-9) return 1.0;
+    final raw = (_scale - LyricLayout.inactiveScale) / denom;
     return raw.clamp(0.0, 1.0).toDouble();
   }
 

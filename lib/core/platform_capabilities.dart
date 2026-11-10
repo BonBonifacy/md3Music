@@ -128,3 +128,13 @@ bool get supportsLoudnessNormalization => isAndroidPlatform;
 /// 替换 —— 曲谱详情页（酷狗 H5 谱面渲染）已踩坑。桌面端调用方必须降级
 /// （如用 url_launcher 打开系统浏览器），TV 构建同样视为不支持。
 bool get supportsInAppWebView => isAndroidPlatform && !kTvBuild;
+
+/// 小米 CarWith（车机互联）：连接判据（CarWith 虚拟屏 + `ucar_night_mode`）
+/// 全部来自小米/MIUI 原生接口，只有 Android 存在该通道。
+///
+/// **为什么不在这里判 TV**：CarWith 的连接判据在原生侧是「虚拟屏是否存在」，
+/// TV 盒子上永远没有这块屏，读数恒为未连接；把 TV 排除在门外反而会让设置页
+/// 在投屏类设备上少一个入口，交给原生读数说话即可（读数失败一律按未连接，
+/// 行为与不显示该开关等价）。桌面端隐藏入口的原因同 [supportsFloatingSongRecognition]：
+/// 点了就是一个永远不生效的死开关。
+bool get supportsCarWith => isAndroidPlatform;

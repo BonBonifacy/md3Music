@@ -7,6 +7,7 @@
 /// aliases 来自源码中的 `// search: ...` 标注（补充同义词匹配）。
 const List<({String label, String category, String subpage, String aliases})>
     kSettingsSearchIndex = [
+  (label: '跟随CarWith', category: '外观', subpage: '主题与配色', aliases: '主题模式 车机 亮暗 深浅 切换 跟随 小米 carwith 虚拟屏'),
   (label: 'OLED 纯黑深色', category: '外观', subpage: '主题与配色', aliases: 'oled 纯黑 深色 黑色'),
   (label: '使用系统主题色', category: '外观', subpage: '主题与配色', aliases: '系统主题 壁纸 莫奈'),
   (label: '封面动态取色', category: '外观', subpage: '主题与配色', aliases: '动态取色 封面'),
@@ -95,7 +96,8 @@ const List<({String label, String category, String subpage, String aliases})>
   (label: '间奏点水平位置', category: '播放页样式', subpage: '', aliases: '间奏 间奏点 节奏点 水平 位置 起点 左右'),
   (label: '间奏点圆点大小', category: '播放页样式', subpage: '', aliases: '间奏 间奏点 节奏点 圆点 大小 半径 点'),
   (label: '间奏点间距', category: '播放页样式', subpage: '', aliases: '间奏 间奏点 节奏点 间距 距离'),
-  (label: '歌词动画', category: '播放页样式', subpage: '', aliases: '歌词 动画 当前行 上浮 非当前行 缩放 位置 错峰 步长 衰减'),
+  (label: '动画预设', category: '播放页样式', subpage: '', aliases: '预设 动画预设 保存预设 切换预设 删除预设 导入 导出 json 剪贴板'),
+  (label: '歌词动画', category: '播放页样式', subpage: '', aliases: '歌词 动画 当前行 上浮 非当前行 缩放 位置 错峰 步长 衰减 预设 导入 导出 json 剪贴板'),
   (label: 'ColorOS Bridge 兼容字段', category: '歌词', subpage: '歌词推送', aliases: ''),
   (label: '翻译歌词', category: '歌词', subpage: '歌词推送', aliases: '翻译'),
   (label: '罗马音歌词', category: '歌词', subpage: '歌词推送', aliases: '罗马音 拼音'),
@@ -108,6 +110,7 @@ const List<({String label, String category, String subpage, String aliases})>
   (label: '压缩封面图', category: '歌词', subpage: '设备歌词', aliases: '蓝牙 封面 压缩'),
   (label: '锁屏歌词（实验性）', category: '歌词', subpage: '设备歌词', aliases: '锁屏'),
   (label: '状态栏歌词', category: '歌词', subpage: '设备歌词', aliases: '魅族 flyme 状态栏'),
+  (label: '显示CarWith / Jovi InCar歌词', category: '歌词', subpage: '设备歌词', aliases: 'carwith jovi 车机 投屏 逐句 车机屏 虚拟屏 小米'),
   (label: '设备歌词', category: '歌词', subpage: '设备歌词', aliases: ''),
   (label: '隐藏歌词作者信息', category: '歌词', subpage: '', aliases: '屏蔽 隐藏 过滤 制作名单 版权声明 作词 作曲 纯歌词'),
   (label: '过滤正则', category: '歌词', subpage: '', aliases: '正则 表达式 自定义 规则 过滤规则'),

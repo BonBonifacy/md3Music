@@ -10,10 +10,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app.dart';
 import 'core/build_flags.dart';
+import 'core/platform_capabilities.dart';
 import 'core/remote/tv_focus_debug.dart';
 import 'core/layout/responsive_layout.dart';
 import 'core/utils/app_haptics.dart';
 import 'core/services/accompany/accompany_source.dart';
+import 'core/services/car_with_service.dart';
 import 'core/services/desktop_lyric_service.dart';
 import 'core/services/diagnostic_logger.dart';
 import 'core/services/windows_default_font.dart';
@@ -398,6 +400,37 @@ Future<void> _restoreLyricPushPref() async {
     final flymeLyricEnabled = await settings.getFlymeStatusBarLyricEnabled();
     // ignore: discarded_futures
     DesktopLyricService.instance.setFlymeStatusBarLyricEnabled(flymeLyricEnabled);
+
+    // 小米 CarWith / Jovi InCar 车机投屏逐句歌词（独立开关）：与上面魅族段同理，
+    // 冷启动/后台唤醒后要无需进设置页即可继续往车机推词。
+    // 顺序讲究：先 `start()` 把持久化读进内存，再拿 `lyricEnabled` 灌给歌词服务——
+    // 车机两个开关的持久化都在 CarWithService 内部（settings_follow_carwith_dark /
+    // settings_carwith_lyric_enabled），这里不另开一份 prefs 读取，避免双份真值；
+    // 反过来若不 await 就取值，读到的会是尚未回灌的默认 false（开关静默失效）。
+    // 故本文件只在这一个调用点启动它，不重复 start。
+    // TV 构建不编入（`kTvBuild` 为 const，与下方歌词推送协议段同一树摇口径：
+    // 电视没有 CarWith 手机投屏场景）；桌面端由 `supportsCarWith` 运行时挡住。
+    // 门控与设置页那两项入口必须一致（那边的同名表达式见
+    // `settings_page.dart` 顶层 `_carWithUiSupported`）：服务不在这里启动，
+    // 设置页就不该把开关渲染出来。
+    // 自带 try/catch：外层那个 catch 会一并吞掉异常，但**也会跳过后面的歌词
+    // 推送协议恢复**——CarWith 的原生通道在旧 ROM 上取不到属正常，不该连累
+    // 无关通道。
+    if (!kTvBuild && supportsCarWith) {
+      try {
+        await CarWithService.instance.start();
+        // ignore: discarded_futures
+        DesktopLyricService.instance.setCarWithLyricEnabled(
+          CarWithService.instance.lyricEnabled,
+        );
+        // 车机链路的开机恢复痕迹。服务内部只在「覆盖值真的翻转」时打日志，
+        // 静态恢复（值没变）不留记录，真机排障「车机不出词」时容易误判成
+        // 链路没起。这里只补通道标识本身，**不重复** 连接= / 车机深浅= 这两项
+        // 读数（那是 `car_with_service.dart` 主题日志的字段，别处再打一份会
+        // 变成两个真值源）。
+        debugPrint('[MD3Music][carwith] 开机恢复完成');
+      } catch (_) {}
+    }
 
     // 实时歌词推送协议（TV 版不编入：无蓝牙歌词屏/系统歌词桥/车机歌词场景）
     if (!kTvBuild) {

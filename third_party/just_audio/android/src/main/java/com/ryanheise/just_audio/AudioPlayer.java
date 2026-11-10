@@ -2102,6 +2102,32 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
     // 绝不写 LYRICS_LINE（单行模式信号）。
     private static final String UCAR_LYRICS_WHOLE = "ucar.media.metadata.LYRICS_WHOLE";
     private static final String UCAR_LYRICS_STATUS = "ucar.media.metadata.LYRICS_STATUS";
+    // ==== MD3Music fork（CarWith 逐句歌词，2026-11）====
+    // 小米 CarWith 车机侧（CarWith_4.0.20 反汇编 + 真车实测）的取词优先级：
+    // LYRICS_WHOLE 整首（车机按 PlaybackState 进度自己排行）> LYRICS_LINE 当前句兜底。
+    // LYRICS_STATUS 只认 0（有词）；写 1/2/3 会被车机判成「无词」直接收掉歌词。
+    // 标准框架键 android.media.metadata.LYRICS 值同整首，是车机最稳的取法。
+    // 这四键只在 sCarWithConnected==true 时写；断开时一律 remove 回到上游形态
+    // （上面 vivo 那条「无歌词不写负状态、绝不写 LYRICS_LINE」的铁律只约束断开/非 CarWith 路径）。
+    private static final String UCAR_LYRICS_LINE = "ucar.media.metadata.LYRICS_LINE";
+    private static final String FRAMEWORK_LYRICS_KEY = "android.media.metadata.LYRICS";
+    /// MD3Music fork（CarWith）：整首歌词字符上限。超限发**空串**。原因：车机读的是
+    /// 一整个 metadata Binder 事务，同一份里还装着 lyricInfo 整首 JSON 与封面位图，
+    /// 整包超限丢的是整个 metadata（标题/封面一起没了），而不是只丢歌词。取一个保守
+    /// 值 ~200K 字符（UTF-16 约 400KB，叠加 JSON 与位图仍明显低于 Binder 单进程
+    /// 1MB 缓冲区）。
+    private static final int CAR_LYRICS_WHOLE_MAX_CHARS = 200_000;
+    /// MD3Music fork（CarWith）：门控位（由 Kotlin CarWithState/AudioPlaybackService
+    /// 现读连接态后赋值）。false 时本文件所有 CarWith 新增逻辑不生效，代码路径与
+    /// 断开现状逐字节一致。**签名与包名逐字锁定，Kotlin 侧直接引用。**
+    public static volatile boolean sCarWithConnected;
+    /// MD3Music fork（CarWith）：当前逐句歌词文本（updateCarLyricLine 写入；
+    /// enabled=false 时清空）。doApplySessionTitleArtistAndLyricInfo 提交时读它写
+    /// LYRICS_LINE，并把它的变化算进「要不要提交」的去重判定。
+    private static volatile String sCarLyricLine;
+    /// MD3Music fork（CarWith）：活跃实例未就位时收到的逐句歌词推送标记。
+    /// play()/活跃认领路径消费后清位——否则注入全卡在 pending（规格 §一 封面段第 4 点）。
+    private static volatile boolean sCarLyricResubmitPending;
     // v40：support_event 的写入收敛到通用转换路径（LegacyConversions /
     // legacy MediaSessionCompat 两份常量），本类不再按歌词有无增删能力位。
 
@@ -2172,6 +2198,107 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
             return Long.parseLong(padded);
         } catch (NumberFormatException e) {
             return 0L;
+        }
+    }
+
+    // ==== MD3Music fork（CarWith 逐句歌词，2026-11）：提交侧状态与入口 ====
+    // 上一次「真正提交进 extras」时的连接态与当前句。carStateChanged 用它做逐句
+    // 去重：内容没变的 tick 不重发（防 Binder 风暴）；连接态翻转或换句必须重发，
+    // 断开时这一次重发负责把连着时写过的四个键 remove 掉、回到上游形态。
+    private static volatile boolean sLastCommittedCarConnected;
+    private static volatile String sLastCommittedCarLine = "";
+    // 封面按 mediaId 缓存（仅连着车机时写入/使用）：逐句重发的某些次不带 artwork，
+    // 主机收到会把封面冲掉（规格 §一 封面段第 5 点）。同一首用上一张补回；
+    // mediaId 变了不补（新歌的封面由 APS 注入链自己带来）。
+    private static volatile String sCarArtCacheMediaId;
+    private static volatile byte[] sCarArtCacheJpeg;
+
+    /// MD3Music fork（CarWith）：逐句歌词推送入口。由原生 AudioPlaybackService
+    /// .applyCarWithLyricLine 调用（连接态已由调用方现读刷进 sCarWithConnected，
+    /// 本方法不再自行判连接）。enabled=false 时清空当前句。每次推送都安排一次
+    /// 元数据重提交，走既有 replaceMediaItem 合批路径（规格 §一：歌词键写入与
+    /// 清除合进同一次提交，且「只有歌词行变化也要强制重发一次元数据」）。
+    /// **签名逐字锁定，Kotlin 侧直接引用。**
+    public static void updateCarLyricLine(boolean enabled, String lyric) {
+        sCarLyricLine = enabled ? (lyric != null ? lyric : "") : "";
+        AudioPlayer p = sActivePlayer;
+        if (p != null) {
+            p.requestCarLyricResubmit();
+        } else {
+            // 活跃实例还没就位（冷启动/连车唤醒 play() 早退那条）：置 pending，
+            // 由 play()/认领路径消费。丢推送会让车机停在旧句直到下次切歌。
+            sCarLyricResubmitPending = true;
+            Log.i("AudioFocusFork", "updateCarLyricLine: no active player, resubmit pending");
+        }
+    }
+
+    /// 把「当前句变了要重提交」落到既有的 lyricInfo 合批提交路径上：以当前 item 的
+    /// title/artist/lyricInfo 原值再提交一次——titleChanged/lyricChanged 自然为
+    /// false，靠 carStateChanged 穿过去重。派发到 player 所在线程执行。
+    private void requestCarLyricResubmit() {
+        sCarLyricResubmitPending = false;
+        final androidx.media3.common.Player pl = player;
+        if (pl == null) return;
+        try {
+            Handler handler = new Handler(pl.getApplicationLooper());
+            handler.post(() -> {
+                try {
+                    MediaItem cur = player.getCurrentMediaItem();
+                    if (cur == null) return;
+                    android.os.Bundle ex = cur.mediaMetadata.extras;
+                    String lyric = ex == null ? null : ex.getString(SESSION_LYRIC_INFO_KEY);
+                    CharSequence t = cur.mediaMetadata.title;
+                    CharSequence a = cur.mediaMetadata.artist;
+                    doApplySessionTitleArtistAndLyricInfo(
+                            cur.mediaId, 0,
+                            t == null ? null : t.toString(),
+                            a == null ? null : a.toString(),
+                            lyric, null, null, 0);
+                } catch (Exception e) {
+                    Log.w("AudioFocusFork", "car lyric resubmit failed: " + e);
+                }
+            });
+        } catch (Exception e) {
+            Log.w("AudioFocusFork", "requestCarLyricResubmit dispatch failed: " + e);
+        }
+    }
+
+    /// MD3Music fork（CarWith·活跃实例认领）：冷启动/连车唤醒时 play() 在
+    /// playWhenReady==true 处早退，sActivePlayer 没人赋值，updateCarLyricLine 的
+    /// 注入全部卡在 pending（规格 §一 封面段第 4 点，vivo 侧 v42 同类问题）。
+    /// 只在「活跃位为空或指向已失效实例」时认领——正常换活跃播放器仍走 play()
+    /// 主路径的权威收敛，不与此冲突。伴唱轨由调用方挡掉。
+    private void claimActiveInstanceForCarWith() {
+        AudioPlayer cur = sActivePlayer;
+        if (cur == this) {
+            if (sCarLyricResubmitPending) requestCarLyricResubmit();
+            return;
+        }
+        if (cur != null && cur.everPlayed && cur.player != null) return;
+        Log.i("AudioFocusFork", "claimActiveInstanceForCarWith: sActivePlayer="
+                + (cur == null ? "null" : "stale"));
+        sActivePlayer = this;
+        if (createMediaSession && mediaSession == null) {
+            buildAndHostMediaSession();
+        }
+        syncSingleSessionToHost();
+        // 规格 §一 封面段第 4 点的主诉求就是这条链：早到的封面/标题快照
+        // （sPendingMetadata，由 APS updateActiveSessionMetadata 暂存）与早到的
+        // 逐句歌词 pending，认领后立刻回放，注入不再卡 pending。
+        applyPendingSessionMetadataIfAny();
+        if (sCarLyricResubmitPending) requestCarLyricResubmit();
+    }
+
+    /// MD3Music fork（CarWith）：走会话的三层转发强制重发一次 legacy metadata
+    /// （MediaSession → MediaSessionImpl → MediaSessionLegacyStub）。会话未
+    /// 建/已释放时静默跳过——下一次正常 metadata 提交会带上歌词键。
+    private void forceLegacyMetadataBroadcast() {
+        MediaSession ms = mediaSession;
+        if (ms == null) return;
+        try {
+            ms.forceLegacyMetadataBroadcast();
+        } catch (Throwable t) {
+            Log.w("AudioFocusFork", "forceLegacyMetadataBroadcast failed: " + t);
         }
     }
 
@@ -2444,11 +2571,29 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
                     !(equalsOrBothNull(curTitle, writeTitle) && equalsOrBothNull(curArtist, writeArtist));
             boolean lyricChanged = !((incomingLyric == null && currentLyric == null)
                     || (incomingLyric != null && incomingLyric.equals(currentLyric)));
-            if (!titleChanged && !lyricChanged) return;
+            // MD3Music fork（CarWith）：逐句歌词变化也算进 changed 判定。Kotlin 侧
+            // 每换一句推 updateCarLyricLine → requestCarLyricResubmit 用原值再提交，
+            // 若只看 title/lyricInfo 会被上面的去重吞掉，车机永远收不到逐句更新。
+            // 比较基准是「上次真正提交进 extras」的值而非 sCarLyricLine 现值：
+            // 内容没变的 tick 依旧跳过（防 Binder 风暴），连接态翻转或换句必重发。
+            String carLineNow = sCarLyricLine == null ? "" : sCarLyricLine;
+            boolean carStateChanged =
+                    sCarWithConnected != sLastCommittedCarConnected
+                            || (sCarWithConnected && !carLineNow.equals(sLastCommittedCarLine));
+            if (!titleChanged && !lyricChanged && !carStateChanged) return;
 
             MediaMetadata.Builder mb = m.buildUpon();
             if (writeTitle != null && !writeTitle.isEmpty()) mb.setTitle(writeTitle);
             if (writeArtist != null && !writeArtist.isEmpty()) mb.setArtist(writeArtist);
+            // MD3Music fork（CarWith）：逐句重发也不许「空手」——本份没带 artwork 时
+            // 按 mediaId 用缓存补回上一张，否则主机收到这份会把封面冲掉（mediaId
+            // 变了不补）。已在 item 自带 artworkData 的情况下 buildUpon 原样保留，
+            // 无需处理。
+            if (sCarWithConnected && m.artworkData == null
+                    && cur.mediaId != null && cur.mediaId.equals(sCarArtCacheMediaId)
+                    && sCarArtCacheJpeg != null) {
+                mb.setArtworkData(sCarArtCacheJpeg, MediaMetadata.PICTURE_TYPE_FRONT_COVER);
+            }
             android.os.Bundle newExtras = currentExtras != null
                     ? new android.os.Bundle(currentExtras)
                     : new android.os.Bundle();
@@ -2470,13 +2615,48 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
                 newExtras.putString(UCAR_LYRICS_WHOLE, carLrc);
                 newExtras.putLong(UCAR_LYRICS_STATUS, 0L);
             }
+            // ==== MD3Music fork（CarWith）：四条歌词键与 vivo 两键合进同一次提交 ====
+            // 连着：四键全写；整首为空也写空串（跳过会让车机停在上一句），
+            //   超上限发空串（见 CAR_LYRICS_WHOLE_MAX_CHARS 注释：整包超限丢的
+            //   是整个 metadata，不是只丢歌词）。LYRICS_STATUS 恒写 0——规格实测
+            //   写 1/2/3 会被车机当「无词」直接收掉歌词，无词歌靠 WHOLE="" +
+            //   LINE 空维持「不卡住」（§九 复验点 3）。连着时覆盖上面 vivo 分支
+            //   的同名两键（键名相同，值以 CarWith 口径为准）。
+            // 断开：删 CarWith 专有的两条键（LINE 与框架 LYRICS——vivo 语义从不写
+            //   它们，删掉即清掉「连着时写过」的残留，对纯 vivo 断开态是空操作）。
+            //   WHOLE/STATUS 不在这删：上面 vivo 分支刚按既有语义重算过（有词写
+            //   原值、无词删），这里若再删就改变断开时的既有 vivo 行为（铁律）。
+            //   断开后第一次提交完成，extras 键集合与从未连过 CarWith 完全一致。
+            if (sCarWithConnected) {
+                String whole = carLrc == null ? "" : carLrc;
+                if (whole.length() > CAR_LYRICS_WHOLE_MAX_CHARS) whole = "";
+                newExtras.putString(UCAR_LYRICS_WHOLE, whole);
+                newExtras.putString(FRAMEWORK_LYRICS_KEY, whole);
+                newExtras.putString(UCAR_LYRICS_LINE, carLineNow);
+                newExtras.putLong(UCAR_LYRICS_STATUS, 0L);
+            } else {
+                newExtras.remove(UCAR_LYRICS_LINE);
+                newExtras.remove(FRAMEWORK_LYRICS_KEY);
+            }
             MediaMetadata updated = mb.setExtras(newExtras).build();
             player.replaceMediaItem(
                     player.getCurrentMediaItemIndex(),
                     cur.buildUpon().setMediaMetadata(updated).build());
+            sLastCommittedCarConnected = sCarWithConnected;
+            sLastCommittedCarLine = sCarWithConnected ? carLineNow : "";
+            if (carStateChanged && !titleChanged && !lyricChanged) {
+                // 仅歌词行/连接态变化：media3 的 MediaMetadata.equals 不比 extras
+                // （stub 里 legacyLyricInfo 的专门对比就是为此加的），这类提交不会
+                // 触发 onMediaMetadataChanged → legacy 去重把整次吞掉，legacy 控制
+                // 器（CarWith 主机）永远不重读。必须强制补发一次；断开翻转时同样
+                // 需要这一次，负责把连着时写进 framework 顶层的 LINE/LYRICS 残留
+                // 冲掉（WHOLE/STATUS 按 vivo 既有语义由 vivo 分支自行处理）。
+                forceLegacyMetadataBroadcast();
+            }
             Log.d("AudioFocusFork", "doApplySessionTitleArtistAndLyricInfo OK hasLyricInfo="
                     + (incomingLyric != null)
-                    + " titleChanged=" + titleChanged + " lyricChanged=" + lyricChanged);
+                    + " titleChanged=" + titleChanged + " lyricChanged=" + lyricChanged
+                    + " carStateChanged=" + carStateChanged);
         } catch (Exception e) {
             Log.w("AudioFocusFork", "doApplySessionTitleArtistAndLyricInfo failed: " + e);
         }
@@ -2580,7 +2760,22 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 art.compress(Bitmap.CompressFormat.JPEG, 90, baos);
                 mb.setArtworkData(baos.toByteArray(), MediaMetadata.PICTURE_TYPE_FRONT_COVER);
+                // MD3Music fork（CarWith）：封面按 mediaId 缓存（仅连着车机时留档，
+                // 断开不缓存、不残留）。逐句重发有些一次不带 artwork，主机收到会
+                // 冲掉封面（规格 §一 封面段第 5 点）——同一首用这一张补回去。
+                if (sCarWithConnected) {
+                    sCarArtCacheMediaId = cur.mediaId;
+                    sCarArtCacheJpeg = baos.toByteArray();
                 }
+                }
+            } else if (sCarWithConnected
+                    && cur.mediaMetadata.artworkData == null
+                    && cur.mediaId != null
+                    && cur.mediaId.equals(sCarArtCacheMediaId)
+                    && sCarArtCacheJpeg != null) {
+                // 本份 metadata 不带 artwork 且不是「item 原本自带」——同一首用缓存
+                // 补回上一张；mediaId 变了不补（新歌封面由注入链自己带来）。
+                mb.setArtworkData(sCarArtCacheJpeg, MediaMetadata.PICTURE_TYPE_FRONT_COVER);
             }
             // 封面和循环模式一次发布，保留已写入的歌词和其他扩展字段。
             android.os.Bundle originalExtras = cur.mediaMetadata.extras;
@@ -2770,6 +2965,12 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
     public void play(Result result) {
         everPlayed = true;
         if (player.getPlayWhenReady()) {
+            // MD3Music fork（CarWith·活跃实例认领，2026-11）：连车唤醒/冷恢复时
+            // 播放器往往已经自行处于 playWhenReady=true，这里过去的 early return
+            // 让 sActivePlayer 从未被赋值（spec §一 封面段第 4 点：注入全卡在
+            // pending）。只在本实例真正在播且活跃位空/已失效时认领；伴唱轨永不
+            // 认领；断开时不动任何既有状态（门控保证 vivo 场景行为不变）。
+            if (sCarWithConnected && !silentSession) claimActiveInstanceForCarWith();
             result.success(new HashMap<String, Object>());
             return;
         }
@@ -2799,6 +3000,8 @@ public class AudioPlayer implements MethodCallHandler, Player.Listener, Metadata
         // ×3 实锤），被丢后岛在窗口期弹"无信息卡片"。此处回放 pending 快照，
         // 保证会话激活前元数据已就位——岛弹卡即有歌名/封面。
         applyPendingSessionMetadataIfAny();
+        // MD3Music fork（CarWith）：本实例刚成为活跃位，消费早到的逐句歌词 pending。
+        if (sCarLyricResubmitPending) requestCarLyricResubmit();
         // MD3Music fork：跨fade 角色互换时本播放器的会话可能已被 syncSingleSessionToHost
         // release（从系统注销），play 时若已释放则重建，保证系统始终有当前活跃播放器的会话。
         if (createMediaSession && mediaSession == null) {

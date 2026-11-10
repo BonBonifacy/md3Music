@@ -29,6 +29,7 @@ import '../../core/remote/remote_slider.dart';
 import '../../core/services/audio_service_io.dart';
 import '../../core/services/volume_normalization_service.dart';
 import '../../core/services/background_image_loader.dart';
+import '../../core/services/car_with_service.dart';
 import '../../core/widgets/app_background.dart' show kDefaultWallpaperAsset;
 import '../../core/services/custom_font_loader.dart';
 import '../../core/utils/app_toast.dart';
@@ -132,6 +133,43 @@ const M3ESliderDecoration kFreeSliderDecoration = M3ESliderDecoration(
     minimumDragInterval: Duration(milliseconds: 60),
   ),
 );
+
+/// 只在支持小米 CarWith 的平台（`supportsCarWith` = Android）才存在的搜索条目。
+///
+/// **为什么不进生成器**：`scripts/tools/gen_settings_search_index.dart` 是开发期
+/// 静态工具，只认 `kTvBuild` 一类编译期 const 旗标，看不穿运行时平台判定，
+/// 产物（索引）因此是全构建共用的编译期常量 —— CarWith 两条必须始终留在索引里
+/// 供 Android 用，只能由消费端 `_searchResults` 在非 CarWith 平台过滤掉，
+/// 否则桌面端搜「CarWith」会跳到一个根本不渲染的设置项。
+/// 名单与 `test/modules/settings/carwith_search_index_test.dart` 双向往返核对。
+const Set<String> kCarWithOnlySearchLabels = {
+  '显示CarWith / Jovi InCar歌词',
+  '跟随CarWith',
+};
+
+/// 车机两项 UI 入口（主题第二排那枚芯片 + 设备歌词开关）是否渲染。
+///
+/// **为什么在 `supportsCarWith` 之外还要 `!kTvBuild`**：TV 也是 Android，
+/// 只判平台会让电视上露出一个永远不生效的开关 —— `lib/main.dart` 的
+/// `CarWithService.start()` 本身就带 `!kTvBuild` 门控（电视没有手机投屏场景），
+/// 服务在 TV 上从没启动过，既没有心跳也没回填过持久化，开关点了不会有任何后果。
+/// `kTvBuild` 是编译期 const，非 TV 包里本表达式折叠为 `supportsCarWith`，
+/// 手机侧行为与树摇语义都和改动前一致（同 `main.dart` 的歌词通道口径）。
+bool get _carWithUiSupported => !kTvBuild && supportsCarWith;
+
+/// 一条索引在当前平台是否应进搜索结果。
+///
+/// 抽成独立函数的原因：`supportsCarWith` 是运行时平台 getter，测试里改不了
+/// 宿主平台，所以平台位由调用方注入 —— 这样真/假两种平台都能双向断言
+/// （见 `test/modules/settings/carwith_search_index_test.dart`），而消费端
+/// `_searchResults` 只有这一个过滤入口，不会出现第二份判断逻辑。
+bool carWithEntryAllowed(
+  ({String label, String category, String subpage, String aliases}) entry, {
+  required bool carWithSupported,
+}) {
+  if (carWithSupported) return true;
+  return !kCarWithOnlySearchLabels.contains(entry.label);
+}
 
 class SettingsPage extends StatefulWidget {
   /// 可选扩展：设置页分类列表的额外分类（默认关闭，由宿主注入，
@@ -1911,6 +1949,7 @@ class _SettingsPageState extends State<SettingsPage>
                     !_kAndroidOnlyAudioLabels.contains(e.label)) &&
                 (isAndroidPlatform ||
                     !_kAndroidOnlySpectrumLabels.contains(e.label)) &&
+                carWithEntryAllowed(e, carWithSupported: _carWithUiSupported) &&
                 (!Platform.isWindows || e.label != '歌词推送'))
               e,
           for (final e in SettingsPage.extraSearchIndexEntries ?? const [])
@@ -2286,7 +2325,8 @@ class _SettingsPageState extends State<SettingsPage>
     );
   }
 
-  /// 「设备歌词」三级子页：桌面悬浮歌词、蓝牙歌词、锁屏歌词与魅族状态栏歌词。
+  /// 「设备歌词」三级子页：桌面悬浮歌词、蓝牙歌词、锁屏歌词、魅族状态栏歌词
+  /// 与车机投屏逐句歌词（末项只在 `_carWithUiSupported` 的平台出现）。
   Widget _buildDeviceLyricSubpage(ColorScheme colorScheme) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -2388,6 +2428,33 @@ class _SettingsPageState extends State<SettingsPage>
           ),
           // search: 状态栏 提前 提前量 快 慢
           if (_flymeStatusBarLyricEnabled) const _FlymeLyricAdvanceTile(),
+        ],
+        // 车机投屏逐句歌词：只在支持 CarWith 的平台渲染（同上面魅族项
+        // 「非支持机型整项隐藏」的做法）——桌面端点了是一辈子不生效的死路。
+        if (_carWithUiSupported) ...[
+          _buildGroupLabel('车机投屏歌词', colorScheme),
+          // search: carwith jovi 车机 投屏 逐句 车机屏 虚拟屏 小米
+          // 值绑 CarWithService 单例（持久化在服务内部完成，UI 不碰 prefs），
+          // 用 ListenableBuilder 订阅同一实例：开关从别处（心跳/回前台）翻转时
+          // 这行跟着刷新，不需要本地 setState 副本（避免双份真值）。
+          ListenableBuilder(
+            listenable: CarWithService.instance,
+            builder: (context, _) => SwitchListTile(
+              title: const Text('显示CarWith / Jovi InCar歌词'),
+              subtitle: const Text(
+                '车机投屏时逐句显示歌词，手机熄屏后车机侧继续走词',
+              ),
+              value: CarWithService.instance.lyricEnabled,
+              onChanged: (value) async {
+                AppHaptics.lightImpact(HapticCategory.control);
+                // 顺序讲究：先把开关值灌进服务（连接态采样、整首歌词发布等
+                // 都按它走），再让歌词服务生效。反过来会让启用瞬间先推旧格式，
+                // 同 _applyLyricPushProtocol 里「先同步 ColorOS 模式再启用推送」。
+                await CarWithService.instance.setLyricEnabled(value);
+                await DesktopLyricService.instance.setCarWithLyricEnabled(value);
+              },
+            ),
+          ),
         ],
       ],
     );
@@ -2840,19 +2907,19 @@ class _SettingsPageState extends State<SettingsPage>
   /// 「主题与配色」三级子页：明暗模式 + 主题色来源。
   Widget _buildThemeSubpage(ColorScheme colorScheme) {
     final themeProvider = context.read<ThemeProvider>();
-    // 仅 ThemeMode.light 时禁用 OLED 开关；dark 与 system 均可勾选。
-    // system 模式下勾选后，等系统切到深色时 darkTheme 自动应用纯黑（MaterialApp 机制）。
-    // 以 ThemeProvider 为准（单一数据源），避免与本地 _themeMode 双份不同步
-    final canToggleOled =
-        context.watch<ThemeProvider>().themeMode != ThemeMode.light;
+    // 当前档位（watch 订阅：主题模式一变，两排切换器都要跟着刷选中态）
+    final currentMode = context.watch<ThemeProvider>().themeMode;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildGroupLabel('主题模式', colorScheme, first: true),
+        // ⚠️ 既有坑（改造前后都成立）：按钮顺序与 ThemeMode.index
+        // （system=0 / light=1 / dark=2）不一致，必须显式映射，
+        // 不能 ThemeMode.values[index]，否则切换错位。
+        // 第一排：浅色 / 深色 一组互斥单选。停在「跟随系统 / 跟随CarWith」
+        // 这类自动档时这一排两枚都不亮（selectedIndex = null）。
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-          // 注意：按钮顺序(浅色/深色/跟随系统)与 ThemeMode.index(system=0,light=1,dark=2)
-          // 不一致，必须用显式映射，不能直接 ThemeMode.values[index]，否则切换错位。
           child: M3EToggleButtonGroup(
             actions: const [
               M3EToggleButtonGroupAction(
@@ -2863,36 +2930,120 @@ class _SettingsPageState extends State<SettingsPage>
                 label: Text('深色'),
                 icon: Icon(Icons.dark_mode),
               ),
-              M3EToggleButtonGroupAction(
-                label: Text('跟随系统'),
-                icon: Icon(Icons.brightness_auto),
-              ),
             ],
-            selectedIndex: const [
-              ThemeMode.light,
-              ThemeMode.dark,
-              ThemeMode.system,
-            ].indexOf(context.watch<ThemeProvider>().themeMode),
+            selectedIndex: switch (currentMode) {
+              ThemeMode.light => 0,
+              ThemeMode.dark => 1,
+              _ => null,
+            },
             onSelectedIndexChanged: (index) {
               if (index == null) return;
-              const modes = [ThemeMode.light, ThemeMode.dark, ThemeMode.system];
+              const modes = [ThemeMode.light, ThemeMode.dark];
               // 单源：以 ThemeProvider 为准（即时生效 + 自行持久化）
-              context.read<ThemeProvider>().setThemeMode(modes[index]);
+              themeProvider.setThemeMode(modes[index]);
             },
           ),
         ),
-        // OLED 纯黑开关：light 模式禁用；dark 与 system 可勾选。
-        // system 模式下勾选后，系统切深色时自动生效，切浅色时不影响 lightTheme。
+        // 第二排：「跟随系统」与「跟随CarWith」两个各含一枚芯片的组并排 ——
+        // 分成两组（而不是塞进同一组）才允许两枚同时亮：车机连着且系统也深色时，
+        // 两个来源同时成立，同一组互斥就只能显示一个。
+        // 芯片宽度必须由 M3EToggleButtonGroup 量自然宽度：单独拿出来的
+        // M3EToggleButton 会把自己拉满整行，故这里一律用「组」包装。
+        // 外面套 Wrap：车机/窄面板/TV 上放不下就换行，不断版。
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            AppSpacing.xs,
+            AppSpacing.lg,
+            0,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(
+                spacing: AppSpacing.xs,
+                runSpacing: AppSpacing.xs,
+                children: [
+                  // 一档组：点亮即切到跟随系统；已是该档时再点为 null（忽略，
+                  // 自动档之间没有「都不选」的语义）。
+                  M3EToggleButtonGroup(
+                    actions: const [
+                      M3EToggleButtonGroupAction(
+                        label: Text('跟随系统'),
+                        icon: Icon(Icons.brightness_auto),
+                      ),
+                    ],
+                    selectedIndex: currentMode == ThemeMode.system ? 0 : null,
+                    onSelectedIndexChanged: (index) {
+                      if (index == null) return;
+                      themeProvider.setThemeMode(ThemeMode.system);
+                    },
+                  ),
+                  // 桌面端 / TV 都不渲染这一组（见 _carWithUiSupported），
+                  // 第二排自然只剩「跟随系统」。分支内才取单例：桌面路径连单例
+                  // 都不碰，既有桌面端设置页测试因此完全不受影响。
+                  // 值绑 CarWithService 单例（持久化在服务内部完成，UI 不碰 prefs），
+                  // 用 ListenableBuilder 订阅同一实例：翻转（含心跳/回前台）即时生效，
+                  // 不留本地 setState 副本，避免双份真值。
+                  if (_carWithUiSupported)
+                    // search-item: 跟随CarWith | 主题模式 车机 亮暗 深浅 切换 跟随 小米 carwith 虚拟屏
+                    ListenableBuilder(
+                      listenable: CarWithService.instance,
+                      builder: (context, _) => M3EToggleButtonGroup(
+                        actions: const [
+                          M3EToggleButtonGroupAction(
+                            label: Text('跟随CarWith'),
+                            icon: Icon(Icons.wifi_tethering),
+                          ),
+                        ],
+                        selectedIndex:
+                            CarWithService.instance.followDarkEnabled
+                            ? 0
+                            : null,
+                        onSelectedIndexChanged: (index) {
+                          AppHaptics.lightImpact(HapticCategory.control);
+                          // index == null 即取消勾选（该芯片只有 0 一档）
+                          // ignore: discarded_futures
+                          CarWithService.instance.setFollowDarkEnabled(
+                            index != null,
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+              // 说明文字：两排各自独立，所以「跟随系统」与「跟随CarWith」能同时亮。
+              // 措辞刻意带「车机」，方便设置搜索命中（旧实现那套天文位置文案已删净，
+              // 不再复用）。
+              Padding(
+                padding: const EdgeInsets.only(
+                  top: AppSpacing.xs,
+                  bottom: AppSpacing.xs,
+                ),
+                child: Text(
+                  _carWithUiSupported
+                      ? '跟随CarWith：连接小米 CarWith 时跟随车机深浅色'
+                      : '跟随系统：随系统深浅色自动切换',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        // OLED 纯黑深色：**任何时候可勾**（上游在浅色档会把这行禁掉，这里去掉了
+        // 那个判据）。与主题档解耦的理由：纯黑只在 darkTheme 里生效，light 档
+        // 勾着什么都不会变，用户因此可以先勾上、切到深色时自动应用，
+        // 不必来回切档。system 模式同理：系统切深色时 darkTheme 自动应用纯黑。
         // search: oled 纯黑 深色 黑色
         SwitchListTile(
           title: const Text('OLED 纯黑深色'),
           value: themeProvider.useOledBlack,
-          onChanged: canToggleOled
-              ? (v) {
-                  AppHaptics.lightImpact(HapticCategory.control);
-                  themeProvider.setUseOledBlack(v);
-                }
-              : null,
+          onChanged: (v) {
+            AppHaptics.lightImpact(HapticCategory.control);
+            themeProvider.setUseOledBlack(v);
+          },
         ),
         // ② 配色来源：自动取色（系统壁纸 / 封面）优先，两者都关闭时才用手动
         // 种子色，因此「主题色」排在两个自动来源之后，作为兜底项。
@@ -3682,10 +3833,11 @@ class _SettingsPageState extends State<SettingsPage>
         // search-item: 间奏点水平位置 | 间奏 间奏点 节奏点 水平 位置 起点 左右
         // search-item: 间奏点圆点大小 | 间奏 间奏点 节奏点 圆点 大小 半径 点
         // search-item: 间奏点间距 | 间奏 间奏点 节奏点 间距 距离
+        // search-item: 动画预设 | 预设 动画预设 保存预设 切换预设 删除预设 导入 导出 json 剪贴板
         _buildGroupLabel('歌词动效调节', colorScheme),
         // 歌词动画入口：动画参数、歌词模糊强度、辉光触发阈值统一在独立子页无极调节，
         // 排在歌词省电模式（特效兜底开关）之后、音乐频谱分组之前。
-        // search: 歌词 动画 当前行 上浮 非当前行 缩放 位置 错峰 步长 衰减
+        // search: 歌词 动画 当前行 上浮 非当前行 缩放 位置 错峰 步长 衰减 预设 导入 导出 json 剪贴板
         ListTile(
           leading: const Icon(Icons.animation),
           title: const Text('歌词动画'),

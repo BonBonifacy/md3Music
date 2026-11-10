@@ -1190,6 +1190,40 @@ class SettingsRepository {
     );
   }
 
+  // ===== 小米 CarWith（车机互联）=====
+  // 「跟随CarWith」主题开关。键名带 settings_ 前缀以命中 resetAllSettingsToDefaults
+  // 的前缀清理表。读取方为 CarWithService（主题覆盖值 themeOverride 的单一数据源），
+  // UI 不直接读写 prefs，一律经 CarWithService.instance 的 getter/setter，
+  // 保证心跳启停与持久化状态永远同步。
+  static const String _keyFollowCarWithDark = 'settings_follow_carwith_dark';
+
+  Future<bool> getFollowCarWithDark() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyFollowCarWithDark) ?? false;
+  }
+
+  Future<void> setFollowCarWithDark(bool v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyFollowCarWithDark, v);
+  }
+
+  // 「显示CarWith / Jovi InCar歌词」开关。读取方为 CarWithService（持久化 +
+  // lyricEnabled getter）与 DesktopLyricService.setCarWithLyricEnabled（由
+  // main.dart 在启动时注入）；原生侧收到逐句歌词推送时现读连接态，不需要
+  // 本键的原生镜像（与 Flyme 开关不同 —— 那个要原生先于 Dart 恢复）。
+  static const String _keyCarWithLyricEnabled =
+      'settings_carwith_lyric_enabled';
+
+  Future<bool> getCarWithLyricEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyCarWithLyricEnabled) ?? false;
+  }
+
+  Future<void> setCarWithLyricEnabled(bool v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyCarWithLyricEnabled, v);
+  }
+
   // ===== 蓝牙歌词配置 =====
   // 通过修改 MediaSession 元数据（title 显示歌词，artist 显示「作者 - 标题」），
   // 在蓝牙 AVRCP 协议下让汽车主机等设备显示当前歌词。

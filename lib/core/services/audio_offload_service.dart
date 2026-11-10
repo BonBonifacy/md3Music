@@ -192,8 +192,8 @@ class AudioOffloadService extends ChangeNotifier {
 
   /// 幂等初始化：读开关 → 读能力缓存 → 注册监听与原生回调 → 首次下发。
   ///
-  /// 首次没有可用缓存时后台重探测（`reloadCapabilities(reprobe: true)`），
-  /// 失败静默 —— 能力探测只影响「预测显示」，绝不能拖慢启动。
+  /// 仅用户已开启且缓存缺失/过期时后台重探测；关闭时不触碰厂商解码器。
+  /// 能力探测只影响「预测显示」，不阻塞启动。
   Future<void> init() async {
     if (_inited) return;
     _inited = true;
@@ -248,10 +248,16 @@ class AudioOffloadService extends ChangeNotifier {
 
     await refresh();
 
+    _probeMissingCapabilities();
+  }
+
+  void _probeMissingCapabilities() {
+    // 探测会触碰厂商解码器，关闭硬解时只读缓存，不能在后台偷偷实配。
+    if (!_userEnabled) return;
     if (_capabilities == null || _cacheStale) {
       unawaited(reloadCapabilities(reprobe: true));
     }
-    // 解码器能力探测同样只影响「预测 / 展示」，一律后台跑，失败静默。
+    // 用户已明确开启后，才允许后台探测缺失或过期的能力快照。
     if (_decoderCapabilities == null || _decoderStore.stale) {
       unawaited(reloadDecoderCapabilities(reprobe: true));
     }
@@ -277,6 +283,7 @@ class AudioOffloadService extends ChangeNotifier {
 
   /// 用户切换「硬件解码播放」。写 pref 后立即重算（恢复时播放中会挂起到下一首）。
   Future<void> setEnabled(bool value) async {
+    final wasEnabled = _userEnabled;
     if (_userEnabled != value) {
       _userEnabled = value;
       debugPrint('[$_tag] 用户开关 → $value');
@@ -287,6 +294,7 @@ class AudioOffloadService extends ChangeNotifier {
       }
     }
     await refresh();
+    if (!wasEnabled && _userEnabled) _probeMissingCapabilities();
   }
 
   /// 重算让路原因并按时机下发。
@@ -380,6 +388,7 @@ class AudioOffloadService extends ChangeNotifier {
   /// 一次真探测（原生在后台线程跑，失败会退回缓存快照）。失败静默，保持旧值。
   Future<void> reloadCapabilities({bool reprobe = false}) async {
     if (!supportsAudioOffload) return;
+    if (reprobe && !_userEnabled) return;
     try {
       final result = await _channel.invokeMapMethod<String, dynamic>(
         reprobe ? 'probeCapabilities' : 'getCachedCapabilities',
@@ -422,6 +431,7 @@ class AudioOffloadService extends ChangeNotifier {
   /// 不能因为它失败而影响播放决策。
   Future<void> reloadDecoderCapabilities({bool reprobe = false}) async {
     if (!supportsAudioOffload) return;
+    if (reprobe && !_userEnabled) return;
     try {
       final result = await _channel.invokeMapMethod<String, dynamic>(
         reprobe ? 'probeDecoderCapabilities' : 'getCachedDecoderCapabilities',
