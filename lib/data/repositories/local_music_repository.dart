@@ -24,7 +24,19 @@ import '../../core/utils/audio_scanner.dart';
 class LocalMusicRepository {
   static const String _foldersKey = 'local_music_scan_folders';
   static const String _excludedFoldersKey = 'local_music_excluded_folders';
+  static const String _scanOnlySelectedFoldersKey = 'local_music_scan_only_selected_folders';
   static const String _filterShortAudioKey = 'local_music_filter_short_audio';
+
+  /// 默认保留全盘/默认目录扫描；用户明确开启后只遍历已选目录。
+  Future<bool> getScanOnlySelectedFolders() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_scanOnlySelectedFoldersKey) ?? false;
+  }
+
+  Future<void> setScanOnlySelectedFolders(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_scanOnlySelectedFoldersKey, enabled);
+  }
 
   Future<bool> getFilterShortAudio() async {
     final prefs = await SharedPreferences.getInstance();
@@ -41,9 +53,13 @@ class LocalMusicRepository {
     List<Song> songs, {
     List<String> excludedFolders = const [],
     bool filterShortAudio = false,
+    List<String>? includedFolders,
   }) => songs.where((song) {
     final path = song.localPath;
-    return (path == null || !_isExcluded(path, excludedFolders)) &&
+    final inScope = includedFolders == null ||
+        (path != null && isExcluded(path, includedFolders)) ||
+        (song.folderPath != null && isExcluded(song.folderPath!, includedFolders));
+    return inScope && (path == null || !_isExcluded(path, excludedFolders)) &&
         (song.folderPath == null || !_isExcluded(song.folderPath!, excludedFolders)) &&
         (!filterShortAudio || song.duration > const Duration(seconds: 60));
   }).toList();
@@ -342,11 +358,15 @@ class LocalMusicRepository {
   ///
   /// 优先使用 MediaStore（沙箱兼容），再补充文件系统扫描用户自定义目录。
   /// [excludedFolders] 中的文件夹及其子目录会被排除。
+  /// [scanOnlySelectedFolders] 开启时跳过全量 MediaStore 和默认目录，只递归已选目录。
   Future<List<Song>> scanSongs({
     List<String>? customFolders,
     List<String>? excludedFolders,
+    bool scanOnlySelectedFolders = false,
   }) async {
     if (kIsWeb) return [];
+    // 无已选目录时绝不回退成全盘扫描。
+    if (scanOnlySelectedFolders && (customFolders == null || customFolders.isEmpty)) return [];
 
     final excluded = excludedFolders ?? [];
     final songs = <Song>[];
@@ -356,7 +376,7 @@ class LocalMusicRepository {
     // MediaStore 是 Android 专属能力（依赖 android/app 的 MediaStore 桥）。
     // Windows 上调用只会拿到 MissingPluginException 白跑一趟并打一条
     // 误导性日志，直接跳过，扫描全部走文件系统源。
-    if (!Platform.isWindows) {
+    if (!scanOnlySelectedFolders && !Platform.isWindows) {
       await _collectFromMediaStore(songs, seenPaths, seenStorageKeys, excluded);
     }
 
@@ -399,7 +419,9 @@ class LocalMusicRepository {
     }
 
     // 3. 文件系统补充：扫描默认目录 + 非 SAF 自定义目录
-    final scanDirs = <String>[...defaultScanDirsForPlatform];
+    final scanDirs = <String>[
+      if (!scanOnlySelectedFolders) ...defaultScanDirsForPlatform,
+    ];
     if (customFolders != null) {
       for (final f in customFolders) {
         if (!FolderPickerService.isTreeUri(f) && !scanDirs.contains(f)) {

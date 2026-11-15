@@ -304,7 +304,7 @@ class KugouApiClient {
         );
         if (localFailure != null) onPlaybackLocalFailure?.call(localFailure);
       }
-      print(
+      debugPrint(
         '[API _get] Non-200 or non-map: path=$path status=${response.statusCode} data=${response.data}',
       );
       return null;
@@ -330,13 +330,13 @@ class KugouApiClient {
       } else {
         onLyricFailure?.call(_LyricApiFailure.transient);
       }
-      print(
+      debugPrint(
         '[API _get] DioException: url=${e.requestOptions.uri} err=${e.type} response=${e.response?.statusCode} ${e.response?.data}',
       );
       return null;
     } catch (e) {
       onLyricFailure?.call(_LyricApiFailure.invalidData);
-      print('[API _get] Error: $e');
+      debugPrint('[API _get] Error: $e');
       return null;
     }
   }
@@ -393,12 +393,12 @@ class KugouApiClient {
       if (body is Map<String, dynamic>) {
         return body;
       }
-      print(
+      debugPrint(
         '[API _getAllowNonOk] DioException: ${e.type} ${e.message} response=${e.response?.statusCode}',
       );
       return null;
     } catch (e) {
-      print('[API _getAllowNonOk] Error: $e');
+      debugPrint('[API _getAllowNonOk] Error: $e');
       return null;
     }
   }
@@ -421,12 +421,12 @@ class KugouApiClient {
           return response.data as Map<String, dynamic>;
         }
       }
-      print(
+      debugPrint(
         '[API _post] Non-200 or non-map: status=${response.statusCode} data=${response.data}',
       );
       return null;
     } on DioException catch (e) {
-      print(
+      debugPrint(
         '[API _post] DioException: ${e.type} ${e.message} response=${e.response?.statusCode} ${e.response?.data}',
       );
       // 酷狗服务器在 4xx/5xx 响应体中通常仍返回 JSON（含 error_code），
@@ -436,9 +436,37 @@ class KugouApiClient {
       }
       return null;
     } catch (e) {
-      print('[API _post] Error: $e');
+      debugPrint('[API _post] Error: $e');
       return null;
     }
+  }
+
+  /// 用户数据类请求的自动重试包装（收藏/云盘/签到等首屏数据）。
+  ///
+  /// 弱网或低端设备上首屏请求偶发"无响应"（_get/_post 吞异常后返回 null，
+  /// 无任何业务错误体），页面层只能显示空态或"加载失败"。此包装对返回 null
+  /// 的请求自动重试，最多 3 次尝试、间隔 800ms；有响应体的业务失败
+  /// （如未登录、风控）不重试，直接透传给调用方判定。
+  ///
+  /// 每次重试都写 debugPrint 入诊断日志（DiagnosticLogger 重定向
+  /// debugPrint 自动入库），弱设备上的间歇性失败可在诊断包中定位。
+  Future<Map<String, dynamic>?> _userDataWithRetry(
+    String tag,
+    Future<Map<String, dynamic>?> Function() request,
+  ) async {
+    const maxAttempts = 3;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      final result = await request();
+      if (result != null) return result;
+      debugPrint(
+        '[KugouApi] $tag 第 $attempt 次请求无响应'
+        '${attempt < maxAttempts ? '，800ms 后自动重试' : '，已放弃'}',
+      );
+      if (attempt < maxAttempts) {
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+      }
+    }
+    return null;
   }
 
   /// 发送二进制 POST 请求（用于听歌识曲等接口）
@@ -486,12 +514,12 @@ class KugouApiClient {
           return json;
         }
       } catch (_) {}
-      print(
+      debugPrint(
         '[API _postBinary] Non-JSON body: status=${response.statusCode} body=${response.body.substring(0, response.body.length.clamp(0, 200))}',
       );
       return null;
     } catch (e) {
-      print('[API _postBinary] Error: $e');
+      debugPrint('[API _postBinary] Error: $e');
       return null;
     }
   }
@@ -589,7 +617,7 @@ class KugouApiClient {
 
       _dfid = prefs.getString('kugou_dfid');
     } catch (e) {
-      print('❌ [Auth] 从存储初始化失败: $e');
+      debugPrint('❌ [Auth] 从存储初始化失败: $e');
     } finally {
       _isInitialized = true;
       _initCompleter?.complete();
@@ -656,7 +684,7 @@ class KugouApiClient {
       _userid = userid;
       _vipToken = vipToken;
     } catch (e) {
-      print('❌ [Auth] 保存登录状态失败: $e');
+      debugPrint('❌ [Auth] 保存登录状态失败: $e');
       throw StateError('登录凭证保存失败，请重试');
     }
   }
@@ -682,7 +710,7 @@ class KugouApiClient {
       await prefs.setString('kugou_current_userid', uid);
       return true;
     } catch (e) {
-      print('❌ [Auth] 切换账号失败: $e');
+      debugPrint('❌ [Auth] 切换账号失败: $e');
       return false;
     }
   }
@@ -701,7 +729,7 @@ class KugouApiClient {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kAccountsKey, KugouAccount.encodeList(_accounts));
     } catch (e) {
-      print('❌ [Auth] 保存过期标记失败: $e');
+      debugPrint('❌ [Auth] 保存过期标记失败: $e');
     }
   }
 
@@ -725,7 +753,7 @@ class KugouApiClient {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kAccountsKey, KugouAccount.encodeList(_accounts));
     } catch (e) {
-      print('❌ [Auth] 保存账号资料失败: $e');
+      debugPrint('❌ [Auth] 保存账号资料失败: $e');
     }
   }
 
@@ -753,7 +781,7 @@ class KugouApiClient {
         await prefs.remove('kugou_current_userid');
       }
     } catch (e) {
-      print('❌ [Auth] 删除账号失败: $e');
+      debugPrint('❌ [Auth] 删除账号失败: $e');
     }
   }
 
@@ -792,7 +820,7 @@ class KugouApiClient {
       _accounts.clear();
       await prefs.remove(_kAccountsKey);
     } catch (e) {
-      print('❌ [Auth] 清除登录状态失败: $e');
+      debugPrint('❌ [Auth] 清除登录状态失败: $e');
     }
   }
 
@@ -887,7 +915,7 @@ class KugouApiClient {
           .toList();
       return albums;
     } catch (e) {
-      print('[SearchAlbums] parse error: $e');
+      debugPrint('[SearchAlbums] parse error: $e');
       return null;
     }
   }
@@ -2814,7 +2842,7 @@ class KugouApiClient {
     final songs = parseHomeDiscoverSongs(json);
     if (songs.isEmpty) {
       // ignore: avoid_print
-      print(
+      debugPrint(
         '[topSong] empty keys=${json.keys.toList()} dataType=${json['data'].runtimeType}',
       );
     }
@@ -3196,7 +3224,7 @@ class KugouApiClient {
       final data = json['data'] as Map<String, dynamic>? ?? json;
       return KugouArtistDetail.fromJson(data);
     } catch (e) {
-      print('[ArtistDetail] parse error: $e');
+      debugPrint('[ArtistDetail] parse error: $e');
       return null;
     }
   }
@@ -3224,14 +3252,14 @@ class KugouApiClient {
     );
     if (json == null) {
       // ignore: avoid_print
-      print('[ArtistAlbumDebug] response null, query=$query');
+      debugPrint('[ArtistAlbumDebug] response null, query=$query');
       return null;
     }
     try {
       return KugouArtistAlbums.fromJson(json);
     } catch (e) {
       // ignore: avoid_print
-      print('[ArtistAlbumDebug] parse error: $e');
+      debugPrint('[ArtistAlbumDebug] parse error: $e');
       return null;
     }
   }
@@ -3285,14 +3313,14 @@ class KugouApiClient {
     );
     if (json == null) {
       // ignore: avoid_print
-      print('[ArtistMvDebug] response null, query=$query');
+      debugPrint('[ArtistMvDebug] response null, query=$query');
       return null;
     }
     try {
       return KugouArtistVideos.fromJson(json);
     } catch (e) {
       // ignore: avoid_print
-      print('[ArtistMvDebug] parse error: $e');
+      debugPrint('[ArtistMvDebug] parse error: $e');
       return null;
     }
   }
@@ -3334,12 +3362,12 @@ class KugouApiClient {
       queryParameters: {'album_audio_id': albumAudioId, 'fields': fields},
     );
     if (json == null) {
-      print(
+      debugPrint(
         '[getMvByAlbumAudioId] response null for album_audio_id=$albumAudioId',
       );
       return null;
     }
-    print('[getMvByAlbumAudioId] response: $json');
+    debugPrint('[getMvByAlbumAudioId] response: $json');
     try {
       // 真实响应：{ data: [[ {video_id, mv_name, ...}, ... ]], status, err_code }
       // data 是二维数组：外层按 album_audio_id 分组，内层是该歌曲的多个 MV 版本。
@@ -3365,7 +3393,7 @@ class KugouApiClient {
       }
       return MvInfo.fromJson(json);
     } catch (e) {
-      print('[getMvByAlbumAudioId] parse error: $e');
+      debugPrint('[getMvByAlbumAudioId] parse error: $e');
       return null;
     }
   }
@@ -3396,7 +3424,7 @@ class KugouApiClient {
       }
       return MvDetail.fromJson(json, mvId);
     } catch (e) {
-      print('[getVideoDetail] parse error: $e');
+      debugPrint('[getVideoDetail] parse error: $e');
       return null;
     }
   }
@@ -3433,7 +3461,7 @@ class KugouApiClient {
       }
       return null;
     } catch (e) {
-      print('[getVideoUrl] parse error: $e');
+      debugPrint('[getVideoUrl] parse error: $e');
       return null;
     }
   }
@@ -3993,13 +4021,13 @@ class KugouApiClient {
     try {
       final detail = KugouUserDetail.fromJson(json);
       // ignore: avoid_print
-      print(
+      debugPrint(
         '[USER_DETAIL] userid=${detail.userid} nickname=${detail.nickname} raw=${json['data']}',
       );
       return detail;
     } catch (e) {
       // ignore: avoid_print
-      print('[USER_DETAIL] parse error: $e json=$json');
+      debugPrint('[USER_DETAIL] parse error: $e json=$json');
       return null;
     }
   }
@@ -4039,7 +4067,7 @@ class KugouApiClient {
       return KugouLoginDeviceSnapshot.fromJson(json);
     } catch (e) {
       // ignore: avoid_print
-      print('[LOGIN_DEVICE] parse error: $e');
+      debugPrint('[LOGIN_DEVICE] parse error: $e');
       return null;
     }
   }
@@ -4174,7 +4202,7 @@ class KugouApiClient {
       return KugouUserPreference.fromJson(json);
     } catch (e) {
       // ignore: avoid_print
-      print('[USER_PREF] parse error: $e json=$json');
+      debugPrint('[USER_PREF] parse error: $e json=$json');
       return null;
     }
   }
@@ -4258,12 +4286,16 @@ class KugouApiClient {
 
   /// 收藏页完整同步，避免过滤掉专辑后列表不满一屏而永远触发不了滚动分页。
   Future<Map<String, dynamic>?> getAllUserPlaylists({bool noCache = false}) =>
-      loadFavoritePages(
-        pageSize: 30,
-        listKeys: const ['info', 'list'],
-        fetch: (page) => getUserPlaylist(page: page, pagesize: 30, noCache: noCache),
-        identity: (row) => '${row['type']}:${row['source']}:'
-            '${row['global_collection_id'] ?? row['listid'] ?? row['id'] ?? jsonEncode(row)}',
+      _userDataWithRetry(
+        '收藏歌单列表',
+        () => loadFavoritePages(
+          pageSize: 30,
+          listKeys: const ['info', 'list'],
+          fetch: (page) =>
+              getUserPlaylist(page: page, pagesize: 30, noCache: noCache),
+          identity: (row) => '${row['type']}:${row['source']}:'
+              '${row['global_collection_id'] ?? row['listid'] ?? row['id'] ?? jsonEncode(row)}',
+        ),
       );
 
   Future<Map<String, dynamic>?> getUserFollow({
@@ -4318,10 +4350,13 @@ class KugouApiClient {
     int pagesize = 30,
     bool noCache = false,
   }) async {
-    return await _get(
-      KugouEndpoints.userCloud,
-      queryParameters: {'page': page, 'pagesize': pagesize},
-      noCache: noCache,
+    return await _userDataWithRetry(
+      '云盘列表(page=$page)',
+      () => _get(
+        KugouEndpoints.userCloud,
+        queryParameters: {'page': page, 'pagesize': pagesize},
+        noCache: noCache,
+      ),
     );
   }
 
@@ -4470,7 +4505,7 @@ class KugouApiClient {
           final json = jsonDecode(text);
           if (json is Map<String, dynamic>) return json;
         } catch (_) {}
-        print('[API _postBinaryStreamed] Non-JSON error: ${response.statusCode}');
+        debugPrint('[API _postBinaryStreamed] Non-JSON error: ${response.statusCode}');
         return null;
       }
 
@@ -4516,11 +4551,11 @@ class KugouApiClient {
         }
       }
       if (result == null) {
-        print('[API _postBinaryStreamed] 流提前结束且无 result 行');
+        debugPrint('[API _postBinaryStreamed] 流提前结束且无 result 行');
       }
       return result;
     } catch (e) {
-      print('[API _postBinaryStreamed] Error: $e');
+      debugPrint('[API _postBinaryStreamed] Error: $e');
       return null;
     } finally {
       client?.close();
@@ -5148,7 +5183,7 @@ class KugouApiClient {
           .map((e) => KugouSongDetail.fromJson(e as Map<String, dynamic>))
           .toList();
     } catch (e) {
-      print('[API getAiRecommend] parse error: $e');
+      debugPrint('[API getAiRecommend] parse error: $e');
       return null;
     }
   }
@@ -5217,7 +5252,7 @@ class KugouApiClient {
     try {
       return DyCoverInfo.fromResponse(json, albumAudioId: albumAudioId);
     } catch (e) {
-      print('[API getAlbumDyCover] parse error: $e');
+      debugPrint('[API getAlbumDyCover] parse error: $e');
       return null;
     }
   }
@@ -5559,9 +5594,12 @@ class KugouApiClient {
   /// 保持 POST 方式（与云服务器兼容性最好）。
   /// 传 receive_day 作为 body，云服务器 module 会读取 params.body.receive_day。
   Future<Map<String, dynamic>?> claimDayVip(String receiveDay) async {
-    return await _post(
-      KugouEndpoints.youthDayVip,
-      data: {'receive_day': receiveDay},
+    return await _userDataWithRetry(
+      '签到领取畅听VIP',
+      () => _post(
+        KugouEndpoints.youthDayVip,
+        data: {'receive_day': receiveDay},
+      ),
     );
   }
 
@@ -5570,7 +5608,10 @@ class KugouApiClient {
   /// 保持 POST 方式。云服务器 app.use 接受所有方法，
   /// module 代码与 EchoMusic 后端（MakcRe/KuGouMusicApi）完全一致。
   Future<Map<String, dynamic>?> upgradeDayVip() async {
-    return await _post(KugouEndpoints.youthDayVipUpgrade);
+    return await _userDataWithRetry(
+      '签到升级概念版',
+      () => _post(KugouEndpoints.youthDayVipUpgrade),
+    );
   }
 
   /// 获取验证码格式（/get/verify/info）。

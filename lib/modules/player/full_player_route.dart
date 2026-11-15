@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:provider/provider.dart';
 
+import '../../core/services/windows_fullscreen.dart';
 import '../../core/theme/motion_constants.dart';
 import '../../providers/theme_provider.dart';
 import '../../providers/car_mode_provider.dart';
@@ -49,8 +50,8 @@ const double kPlayerTapEntryOffsetRatio = 0.15;
 /// 位移铺满全程（旧 300ms + expressive 实际前 150ms 就走完了）。
 const Duration kPlayerExpandDuration = Duration(milliseconds: 400);
 
-/// 收起（退出）时长：展开的 65%（退出比进入快）。
-const Duration kPlayerCollapseDuration = Duration(milliseconds: 260);
+/// 收起（退出）时长：展开的 65% + 用户要求的 +200ms 放慢（返回观感太仓促）。
+const Duration kPlayerCollapseDuration = Duration(milliseconds: 460);
 
 /// 上拉未达阈值时的**回弹**时长。
 ///
@@ -683,6 +684,14 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
   void dismiss() {
     if (_isDismissing) return;
     _isDismissing = true;
+    // 窗口全屏恢复必须抢在收起动画起跑之前（2026-11-12 实测）：
+    // 原先兜底在 dispose()（reverse 播完 + removeRoute 之后）才退全屏，
+    // 主页已经露出，标题栏重新出现、客户区从整屏缩回 rcWork 的那一帧
+    // 整页内容下跳约一个标题栏高度 —— 用户看到「退出播放页时背景抖一下」。
+    // 提前到 dismiss：resize 的跳变帧被仍不透明的播放页盖住，主页在
+    // 露出瞬间就已按最终几何布局完成，reveal 无跳变。
+    // 非 Zen 关页时快照为 null，exitZen 是 no-op，不影响普通路径。
+    WindowsFullscreen.exitZen();
     _animStartValue = controller.value;
     _animDirection = -1;
     controller.reverse().then((_) {
@@ -1000,9 +1009,9 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
 
   @override
   Duration get reverseTransitionDuration =>
-      usesLightweightDesktopEntry ? const Duration(milliseconds: 160) :
+      usesLightweightDesktopEntry ? const Duration(milliseconds: 360) :
       defaultTargetPlatform == TargetPlatform.windows && !isDragMode
-          ? const Duration(milliseconds: 180)
+          ? const Duration(milliseconds: 380)
           : kPlayerCollapseDuration;
 
   @override

@@ -41,6 +41,10 @@ void main() {
         LyricPreferences.minAlignPositionForCurrentPlatform);
     await prefs.setLiftHeightPx(
         LyricPreferences.minLiftHeightPxForCurrentPlatform);
+    await prefs.setPlayedOpacity(
+        LyricPreferences.minPlayedOpacityForCurrentPlatform);
+    await prefs.setUnplayedOpacity(
+        LyricPreferences.maxUnplayedOpacityForCurrentPlatform);
     await prefs.setInterludeDotsStartX(
         LyricPreferences.maxInterludeDotsStartXForCurrentPlatform);
     await prefs.setInterludeDotRadius(
@@ -74,6 +78,10 @@ void main() {
         equals(LyricPreferences.defaultAlignPositionForCurrentPlatform));
     expect(prefs.liftHeightPx,
         equals(LyricPreferences.defaultLiftHeightPxForCurrentPlatform));
+    expect(prefs.playedOpacity,
+        equals(LyricPreferences.defaultPlayedOpacityForCurrentPlatform));
+    expect(prefs.unplayedOpacity,
+        equals(LyricPreferences.defaultUnplayedOpacityForCurrentPlatform));
     expect(prefs.interludeDotsStartX,
         equals(LyricPreferences.defaultInterludeDotsStartXForCurrentPlatform));
     expect(prefs.interludeDotRadius,
@@ -105,6 +113,10 @@ void main() {
         equals(LyricPreferences.minAlignPositionForCurrentPlatform));
     expect(prefs.liftHeightPx,
         equals(LyricPreferences.minLiftHeightPxForCurrentPlatform));
+    expect(prefs.playedOpacity,
+        equals(LyricPreferences.minPlayedOpacityForCurrentPlatform));
+    expect(prefs.unplayedOpacity,
+        equals(LyricPreferences.maxUnplayedOpacityForCurrentPlatform));
     expect(prefs.interludeDotsStartX,
         equals(LyricPreferences.maxInterludeDotsStartXForCurrentPlatform));
     expect(prefs.interludeDotRadius,

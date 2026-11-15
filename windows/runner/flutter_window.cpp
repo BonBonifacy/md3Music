@@ -30,6 +30,47 @@ constexpr UINT kTrayMenuExit = 2;
 // Flutter 视图子窗口命中钩子的 subclass id（仅本窗口使用）。
 constexpr UINT_PTR kChildHitTestSubclassId = 1;
 const UINT kTaskbarCreatedMessage = RegisterWindowMessageW(L"TaskbarCreated");
+// DWMWA_TRANSITIONS_TO_DISABLED（DWM 过渡动画开关）：老版本 Windows SDK 的
+// dwmapi.h 未声明该枚举，按文档取值 3 直接使用，行为一致。
+constexpr DWORD kDwmTransitionsAttribute = 3;
+
+/// 开/关本窗口的 DWM 过渡动画（最小化/还原/最大化等 show-state 变化时播的
+/// 那段）。全屏形态切换的瞬间必须关掉，否则旧窗口纹理的缩放动画会叠在
+/// 真窗口之上，表现为「窗口套窗口」残影；平时保持打开。
+void DisableDwmTransitions(HWND hwnd, bool disable = true) {
+  const BOOL value = disable ? TRUE : FALSE;
+  DwmSetWindowAttribute(hwnd, kDwmTransitionsAttribute, &value,
+                        sizeof(value));
+}
+
+/// 临时关闭系统的「最小化/还原窗口动画」（MinAnimate）。DWMWA_TRANSITIONS_
+/// TO_DISABLED 对 SetWindowPlacement 触发的最大化/还原动画实测无效：退出
+/// 全屏时旧窗口纹理仍会从还原矩形放大到最大化矩形，叠在真窗口上（用户
+/// 截图的「残影叠加」）。用系统级开关才能压掉；切换完立即恢复原值，用户
+/// 平时的窗口动画不受影响。
+class ScopedMinAnimateOff {
+ public:
+  ScopedMinAnimateOff() {
+    ANIMATIONINFO info{sizeof(ANIMATIONINFO)};
+    SystemParametersInfoW(SPI_GETANIMATION, sizeof(info), &info, 0);
+    previous_ = info.iMinAnimate;
+    if (previous_ != FALSE) {
+      info.iMinAnimate = FALSE;
+      SystemParametersInfoW(SPI_SETANIMATION, sizeof(info), &info, 0);
+    }
+  }
+  ~ScopedMinAnimateOff() {
+    if (previous_ != FALSE) {
+      ANIMATIONINFO info{sizeof(ANIMATIONINFO), previous_};
+      SystemParametersInfoW(SPI_SETANIMATION, sizeof(info), &info, 0);
+    }
+  }
+  ScopedMinAnimateOff(const ScopedMinAnimateOff&) = delete;
+  ScopedMinAnimateOff& operator=(const ScopedMinAnimateOff&) = delete;
+
+ private:
+  int previous_ = FALSE;
+};
 
 std::string StringArg(const Arguments* args, const char* key) {
   if (!args) return {};
@@ -149,6 +190,14 @@ void FlutterWindow::SetFullscreen(bool fullscreen) {
   HWND hwnd = GetHandle();
   if (!hwnd || fullscreen == fullscreen_) return;
 
+  // 形态切换期间关闭本窗口的 DWM 过渡动画，收尾再恢复。只在切换瞬间关闭，
+  // 用户平时手动最大化/还原的动画不受影响。注意：中途改窗口样式可能让该
+  // 属性被重置，所以真正会触发 show-state 变化的调用前还要再关一次（见
+  // 退出路径），不能只在函数开头关一次。
+  DisableDwmTransitions(hwnd);
+  // 同时压掉系统级 MinAnimate（见类注释；函数返回时自动恢复原值）。
+  ScopedMinAnimateOff min_animate_off;
+
   if (fullscreen) {
     // 先留快照：退出时要回到「用户原来那个形态」，而不是一律还原成普通窗口
     // （用户可能本来就是最大化 / 手动拖到某个位置）。
@@ -157,30 +206,31 @@ void FlutterWindow::SetFullscreen(bool fullscreen) {
       fullscreen_restore_placement_ = {sizeof(WINDOWPLACEMENT)};
     }
     fullscreen_restore_style_ = GetWindowLongPtrW(hwnd, GWL_STYLE);
-    // 从最大化进入时必须先退出最大化状态。留着 WS_MAXIMIZE 的话，Windows 仍把
-    // 窗口当「最大化窗口」：顶层窗口被 SetWindowPos 摆到 rcMonitor 是 1920×1080，
-    // 但 Flutter 的子窗口 FLUTTERVIEW 会被按 rcWork 定成 1920×1020，两者脱节 →
-    // 底部 60px 没有内容，任务栏（topmost）正好画在那条空带上，还挡住命中测试
-    // （表现为「进了全屏但底部留着状态栏、任务栏点不动、Win 键唤不出开始菜单」）。
-    // 快照已在上方取到，这里退出最大化不会丢失「退出全屏后回到最大化」的依据。
+    // 从最大化进入时必须把 Windows 内部的「已最大化」状态干净地退掉：只清
+    // WS_MAXIMIZE 样式位的话内部状态不变，退出全屏时无法用 SW_SHOWMAXIMIZED
+    // 直接恢复最大化（实测被当作无变化跳过）。这里先隐藏窗口再 SW_RESTORE：
+    // SW_RESTORE 会干净地退掉内部最大化状态且不改写「还原矩形」（退出全屏
+    // 要靠它回去）；直接调用时的缩放动画与中间帧由隐藏期挡住（transitions
+    // 与 MinAnimate 均已关，隐藏/显示都是瞬时切换）。
+    // 标志必须在改形态前置真：后续触发的 WM_NCCALCSIZE 按 fullscreen_ 取
+    // rcMonitor。放在 if 之外：即使取显示器信息失败也要让退出路径能还原。
+    fullscreen_ = true;
+    MONITORINFO monitor{sizeof(monitor)};
+    const bool haveMonitor = GetMonitorInfoW(
+        MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor) == TRUE;
+    ShowWindow(hwnd, SW_HIDE);
     if (IsZoomed(hwnd)) {
       ShowWindow(hwnd, SW_RESTORE);
     }
     // 去掉标题栏与可缩放边框：WS_THICKFRAME 留着的话屏幕边缘那一圈像素会
     // 继续被算成缩放热区（见 MessageHandler 的 WM_NCHITTEST 守卫）。
-    // WS_MAXIMIZE 一并清掉：SW_RESTORE 已把窗口还原成普通矩形，样式里若还留着
-    // 这一位，窗口会立刻被当成「再次最大化」。
+    // WS_MAXIMIZE 一并清掉：上一步已退出最大化，样式里若还留着这一位，
+    // 窗口会立刻被当成「再次最大化」。
     const LONG_PTR borderless = fullscreen_restore_style_ &
         ~static_cast<LONG_PTR>(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX |
                                WS_MAXIMIZEBOX | WS_SYSMENU | WS_MAXIMIZE);
     SetWindowLongPtrW(hwnd, GWL_STYLE, borderless);
-    // 标志必须在 SetWindowPos 之前置真：SWP_FRAMECHANGED 会同步触发
-    // WM_NCCALCSIZE，那里按 fullscreen_ 决定客户区取 rcMonitor 还是 rcWork。
-    // 放在 if 之外：样式已改，即使取显示器信息失败也要让退出路径能还原。
-    fullscreen_ = true;
-    MONITORINFO monitor{sizeof(monitor)};
-    if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
-                        &monitor)) {
+    if (haveMonitor) {
       // rcMonitor 而非 rcWork：铺满整块显示器，任务栏一并覆盖。
       SetWindowPos(hwnd, HWND_TOP, monitor.rcMonitor.left,
                    monitor.rcMonitor.top,
@@ -188,23 +238,56 @@ void FlutterWindow::SetFullscreen(bool fullscreen) {
                    monitor.rcMonitor.bottom - monitor.rcMonitor.top,
                    SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
     }
+    // 形态落定后再显示（SW_HIDE 丢了激活，SW_SHOW 自带激活）。
+    ShowWindow(hwnd, SW_SHOW);
   } else {
-    if (fullscreen_restore_style_ != 0) {
-      SetWindowLongPtrW(hwnd, GWL_STYLE, fullscreen_restore_style_);
-    }
+    // 改样式可能让 DWM 重置过渡动画属性；SetWindowPlacement 的 show-state
+    // 变化是退出路径唯一的动画来源，先关一遍。
+    DisableDwmTransitions(hwnd);
+    // 「隐藏 → 落定全部原生几何/样式 → 显示」：恢复样式会让全屏矩形上瞬间
+    // 出现一帧原生标题栏、SetWindowPlacement 又是另一次几何变更，DWM 会把
+    // 这些中间帧与 Flutter 侧 Zen 退出的页面过渡动画叠加合成（用户截图的
+    // 「原生边框 + 过渡页叠加」）。transitions 已关，隐藏/显示都是瞬时切换，
+    // 隐藏期间 DWM 不合成本窗口，中间帧就没有任何可见机会。
+    ShowWindow(hwnd, SW_HIDE);
     fullscreen_ = false;
-    if (fullscreen_restore_placement_.length == sizeof(WINDOWPLACEMENT)) {
-      // 先 SW_RESTORE 再套快照：对「已处于 zoomed」的窗口，SetWindowPlacement
-      // 不会重跑最大化布局，窗口会停在全屏矩形 (0,0,rcMonitor) 而不是快照里的
-      // 最大化形态（实测：窗口盖住任务栏、客户区仍按 rcWork 裁）。
-      // 两步在同一个消息循环内完成，用户看不到中间态。
-      ShowWindow(hwnd, SW_RESTORE);
-      // 恢复形态/位置；SetWindowPlacement 会把最大化态一并还原。
-      SetWindowPlacement(hwnd, &fullscreen_restore_placement_);
+    // 先恢复样式再置形态，两点缺一不可（均为实测结论）：
+    // 1) SW_SHOWMAXIMIZED 要求窗口具备 WS_MAXIMIZEBOX 能力位，而无边框样式
+    //    里该位已被清掉——先置形态的话最大化会被静默跳过，退出 Zen 后回不到
+    //    最大化。
+    // 2) WS_MAXIMIZE 必须从恢复的样式里摘掉：它是进入全屏瞬间的过期位，留着
+    //    会让 Windows 认为「已处于最大化」从而跳过 SW_SHOWMAXIMIZED 的重排。
+    if (fullscreen_restore_style_ != 0) {
+      SetWindowLongPtrW(hwnd, GWL_STYLE,
+                        fullscreen_restore_style_ &
+                            ~static_cast<LONG_PTR>(WS_MAXIMIZE));
+    }
+    // 改样式/改形态都会让 DWM 重置过渡动画属性，show-state 变化必须在
+    // 「最后一刻」前关闭才真正生效（实测：只在函数开头关一次，退出瞬间的
+    // 旧窗口纹理缩放动画仍会叠在真窗口上）。
+    DisableDwmTransitions(hwnd);
+    // 直接用 ShowWindow 置目标形态，不再走 SetWindowPlacement：后者内部
+    // 「先落到还原矩形、再最大化」的两段式过程会被 DWM 抓到中间帧（实测
+    // 出现一帧空标题栏窗口摆在还原矩形上）。SW_SHOWMAXIMIZED 从当前矩形
+    // 一步最大化，动画已被 MinAnimate/DWM 开关压掉。
+    const bool to_maximized =
+        fullscreen_restore_placement_.length == sizeof(WINDOWPLACEMENT) &&
+        fullscreen_restore_placement_.showCmd == SW_SHOWMAXIMIZED;
+    if (to_maximized) {
+      ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+    } else if (fullscreen_restore_placement_.length ==
+               sizeof(WINDOWPLACEMENT)) {
+      // 普通形态：直接摆回快照的还原矩形。
+      const RECT& rc = fullscreen_restore_placement_.rcNormalPosition;
+      SetWindowPos(hwnd, HWND_TOP, rc.left, rc.top, rc.right - rc.left,
+                   rc.bottom - rc.top,
+                   SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
     }
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
                  SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
                      SWP_NOACTIVATE);
+    // 形态全部落定后再显示并拿回焦点（SW_HIDE 会丢激活）；SW_SHOW 自带激活。
+    ShowWindow(hwnd, SW_SHOW);
     fullscreen_restore_style_ = 0;
     fullscreen_restore_placement_ = {sizeof(WINDOWPLACEMENT)};
   }
@@ -223,6 +306,8 @@ void FlutterWindow::SetFullscreen(bool fullscreen) {
   // 真机取证用：只记状态，不落任何用户数据。
   OutputDebugStringW(fullscreen ? L"[WindowsFullscreen] value=true\n"
                                 : L"[WindowsFullscreen] value=false\n");
+  // 形态已切换完毕，恢复 DWM 过渡动画（见函数开头的说明）。
+  DisableDwmTransitions(hwnd, false);
 }
 
 void FlutterWindow::ApplyWindowCornerPreference() {

@@ -594,6 +594,11 @@ void main() {
         reason: '起始应处于间奏展开态（占位高度≈1 行）');
     expect(state.interludeDotsActiveForTest as bool, isTrue,
         reason: '起始应检测到激活间奏');
+    // 间奏占位行是"当前行"（圆点落在 alignPosition 上），首帧的滚动目标由
+    // 「歌词行居中」切到「占位行居中」会移动约一行；先让它收敛，否则这段
+    // 入场位移会被下面的"收起期间不得移动"误判成预滚动。
+    await step(tester, 60);
+    expect((state.scrollPosYForTest as double).isFinite, isTrue);
 
     double minYInWindow = double.infinity;
     double worstReversal = 0;
@@ -633,5 +638,193 @@ void main() {
         reason: '预启动窗口内 posY 不得回退（实测回退 ${worstReversal.toStringAsFixed(1)}px）');
     expect(worstJump, lessThan(40.0),
         reason: '整流过程中不得出现单帧跳变（实测 ${worstJump.toStringAsFixed(1)}px）');
+  });
+
+  testWidgets('关闭错峰起点：级联起点对同一锚行恒定（目标 posY 口径）',
+      (tester) async {
+    // 「上拉起始行不一致」回归护栏：起点行按锚行到位后的目标 posY 求，
+    // 与瞬时弹簧相位无关。旧实现用当前 posY，预启动入口帧 / 回落切行帧 /
+    // 上一轮未收敛时起点会漂移。
+    LyricPreferences.instance.setStaggerFromCurrentLine(false);
+    final ValueNotifier<Duration> position =
+        ValueNotifier<Duration>(Duration.zero);
+    addTearDown(position.dispose);
+
+    final dynamic state = await mountAndSettle(tester, position, current: 5);
+
+    final int a1 = state.cascadeStartLineForTest(6) as int;
+    final int a2 = state.cascadeStartLineForTest(6) as int;
+    expect(a1, a2, reason: '同一锚行的起点必须恒定');
+    expect(state.cascadeTopLineForTest, a1,
+        reason: '进入预启动窗口后，级联起点应等于确定性计算结果');
+
+    // 故意用不同帧相位跨边界：起点不得随帧相位漂移。
+    for (int k = 0; k < 3; k++) {
+      final int cur = 6 + k;
+      position.value = Duration(milliseconds: cur * lineMs + 10);
+      await tester.pump(const Duration(milliseconds: 16));
+      await step(tester, 3 + k * 5);
+      expect(state.cascadeTopLineForTest, state.cascadeStartLineForTest(cur),
+          reason: '第 $cur 行切行后起点行必须与确定性口径一致'
+              '（帧相位 ${3 + k * 5}）');
+    }
+  });
+
+  testWidgets('关闭错峰起点：预启动窗口内起点到锚行必须全部按住', (tester) async {
+    // 真机日志实证的回归点：预启动接管曾跳过「弹簧未收敛」的行，导致窗口内
+    // 有的行被钉住、有的行跟着预滚上移（行距压扁/重叠），且每轮被跳过的行
+    // 不同 → 「上拉起始位置异常 / 每次不一致」。
+    LyricPreferences.instance.setStaggerFromCurrentLine(false);
+    final ValueNotifier<Duration> position =
+        ValueNotifier<Duration>(Duration.zero);
+    addTearDown(position.dispose);
+
+    final dynamic state = await mountAndSettle(tester, position, current: 5);
+    int posMs = 5 * lineMs + 600;
+    for (int target = 6; target <= 8; target++) {
+      bool entered = false;
+      for (int f = 0; f < 100 && !entered; f++) {
+        posMs += 16;
+        position.value = Duration(milliseconds: posMs);
+        await tester.pump(const Duration(milliseconds: 16));
+        entered = state.cascadeLineHeldForTest(target) as bool;
+      }
+      expect(entered, isTrue, reason: '第 $target 行应进入预启动窗口');
+      final int top = state.cascadeTopLineForTest as int;
+      // 起点行 delay=0，在建立轮次的同一帧就已释放（属正常），从下一行检查。
+      for (int i = top + 1; i <= target; i++) {
+        expect(state.cascadeLineHeldForTest(i) as bool, isTrue,
+            reason: '第 $target 行窗口：起点 $top 到锚行之间不得有行被跳过'
+                '（i=$i 未按住）');
+      }
+    }
+  });
+
+  testWidgets('关闭错峰起点：释放帧屏幕速度连续（上拉不得整块瞬跳）',
+      (tester) async {
+    // 等待期行在屏幕上被钉死（速度 0）；释放时若弹簧初速为 0，整块行会
+    // 突然以滚动速度起飞（有翻译副行时行块更高、目标持续移动，更明显）。
+    // 修复后释放首帧屏幕位移应远小于同帧滚动位移。
+    LyricPreferences.instance.setStaggerFromCurrentLine(false);
+    final ValueNotifier<Duration> position =
+        ValueNotifier<Duration>(Duration.zero);
+    addTearDown(position.dispose);
+
+    final dynamic state = await mountAndSettle(tester, position, current: 5);
+
+    int posMs = 5 * lineMs + 600;
+    bool entered = false;
+    for (int f = 0; f < 40 && !entered; f++) {
+      posMs += 16;
+      position.value = Duration(milliseconds: posMs);
+      await tester.pump(const Duration(milliseconds: 16));
+      entered = state.cascadeLineHeldForTest(6) as bool;
+    }
+    expect(entered, isTrue, reason: '前置：应进入预启动窗口');
+
+    final int top = state.cascadeTopLineForTest as int;
+    final int probe = top + 2; // 窗口内较早释放的行
+    expect(state.cascadeLineHeldForTest(probe) as bool, isTrue,
+        reason: '前置：探针行应处于等待期');
+
+    double prevY = state.lineScreenYForTest(probe) as double;
+    double prevPosY = state.scrollPosYForTest as double;
+    int releasedFrame = -1;
+    double dyNext = 0;
+    double dPosYNext = 0;
+    for (int f = 0; f < 60; f++) {
+      posMs += 16;
+      position.value = Duration(milliseconds: posMs);
+      await tester.pump(const Duration(milliseconds: 16));
+      final double y = state.lineScreenYForTest(probe) as double;
+      final double posY = state.scrollPosYForTest as double;
+      final double dy = (y - prevY).abs();
+      final double dPosY = (posY - prevPosY).abs();
+      final bool held = state.cascadeLineHeldForTest(probe) as bool;
+      if (releasedFrame < 0 && !held) {
+        releasedFrame = f;
+      } else if (releasedFrame >= 0 && f == releasedFrame + 1) {
+        dyNext = dy;
+        dPosYNext = dPosY;
+        break;
+      }
+      prevY = y;
+      prevPosY = posY;
+    }
+    expect(releasedFrame, greaterThanOrEqualTo(0), reason: '探针行应被释放');
+    // 允许 1.5px 的弹簧起步量；其余必须小于同帧滚动位移（速度连续）。
+    final double limit = dPosYNext * 0.6 < 1.5 ? 1.5 : dPosYNext * 0.6;
+    expect(dyNext, lessThan(limit),
+        reason: '释放首帧屏幕位移 ${dyNext.toStringAsFixed(2)}px 过大'
+            '（同帧滚动 ${dPosYNext.toStringAsFixed(2)}px），'
+            '说明整块行被滚动速度拽走，应给弹簧注入 -滚动速度 初速');
+  });
+
+  testWidgets('关闭错峰起点：长帧不触发 seek 保护打断预启动', (tester) async {
+    // 预启动窗口内一次长帧（dt 抖动）不应被判定成 seek：旧实现按「单帧
+    // posY 变化 > 一行高」释放全部等待行，整轮错峰被拦腰拍平。
+    LyricPreferences.instance.setStaggerFromCurrentLine(false);
+    final ValueNotifier<Duration> position =
+        ValueNotifier<Duration>(Duration.zero);
+    addTearDown(position.dispose);
+
+    final dynamic state = await mountAndSettle(tester, position, current: 5);
+
+    int posMs = 5 * lineMs + 600;
+    bool entered = false;
+    for (int f = 0; f < 40 && !entered; f++) {
+      posMs = 5 * lineMs + 600 + (f + 1) * 16;
+      position.value = Duration(milliseconds: posMs);
+      await tester.pump(const Duration(milliseconds: 16));
+      entered = state.cascadeLineHeldForTest(6) as bool;
+    }
+    expect(entered, isTrue, reason: '前置：应进入预启动窗口');
+    final bool held7Before = state.cascadeLineHeldForTest(7) as bool;
+
+    // 音频只前进 60ms，帧时钟一次跳 250ms（模拟系统卡顿）。
+    position.value = Duration(milliseconds: posMs + 60);
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(state.cascadeLineHeldForTest(6) as bool, isTrue,
+        reason: '长帧不得提前释放锚行（锚行释放时刻仍在窗口内）');
+    if (held7Before) {
+      expect(state.cascadeLineHeldForTest(7) as bool, isTrue,
+          reason: '长帧不得把下方等待行整块释放（旧 seek 保护回归）');
+    }
+  });
+
+  testWidgets('关闭错峰起点：一轮走完即收口，回落路径锚行滞后仍 ≤ 3×步长',
+      (tester) async {
+    // 预启动轮次与回落补偿共用 `_CascadeRound`；本轮走完必须清空，
+    // 否则旧口径会抑制下一轮的补偿（历史 `_cascadeTimelinePreStarted`
+    // 跨轮存活的直接问题）。步长取最小值，让本轮在下一个预启动窗口开启前
+    // 排空，从而能在同一测试里断言「收口」。
+    LyricPreferences.instance.setStaggerFromCurrentLine(false);
+    LyricPreferences.instance.setCascadeBaseStepMs(20);
+    final ValueNotifier<Duration> position =
+        ValueNotifier<Duration>(Duration.zero);
+    addTearDown(position.dispose);
+
+    final dynamic state = await mountAndSettle(tester, position, current: 5);
+    final double stepMs = LyricPreferences.instance.cascadeBaseStepMs;
+
+    // 目标跳一行（不经过预启动窗口）：回落路径，锚行滞后 ≤ 3×步长 + 抖动。
+    position.value = Duration(milliseconds: 6 * lineMs + 10);
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(state.cascadeLineHeldForTest(6) as bool, isTrue,
+        reason: '回落路径：切行帧锚行应先被按住');
+    final int rel6 = await pumpUntilReleased(tester, state, 6, maxFrames: 60);
+    expect(rel6, lessThanOrEqualTo(3.0 * stepMs + 96),
+        reason: '回落补偿：锚行释放滞后不得超过 3×步长（实测 ${rel6}ms）');
+
+    // 本轮等待行全部释放后必须收口。冻结权威时间（平滑时钟最多漂移 200ms），
+    // 在下一个预启动窗口（约 1s 后）开启前完成排空。
+    bool inactive = false;
+    for (int f = 0; f < 40 && !inactive; f++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      inactive = !(state.cascadeRoundActiveForTest as bool);
+    }
+    expect(inactive, isTrue,
+        reason: '本轮等待行全部释放后必须收口（不得跨轮存活）');
   });
 }

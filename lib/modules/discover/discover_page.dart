@@ -57,7 +57,10 @@ class _DiscoverPageState extends State<DiscoverPage>
     with SingleTickerProviderStateMixin {
   static const String _kDiscoverLastDateKey = 'discover_last_date';
 
-  DiscoverSectionConfig _sectionConfig = const DiscoverSectionConfig();
+  // 首帧临时值：load() 会立刻覆写为持久化/平台默认；这里也走平台口径，
+  // 避免 Windows 上首帧闪现「新歌速递/新碟上架被隐藏」的旧默认布局。
+  DiscoverSectionConfig _sectionConfig =
+      DiscoverSectionConfig.platformDefaults();
 
   bool _isLoading = true;
   String? _error;

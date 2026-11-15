@@ -254,7 +254,8 @@ jobs:
             --android-project-arg=md3EnableImpeller=false \
             --dart-define=APP_VERSION=${{ steps.version.outputs.version }} \
             --build-name=${{ steps.version.outputs.version }} \
-            --build-number=${{ steps.version.outputs.versionCode }}
+            --build-number=${{ steps.version.outputs.versionCode }} \
+            --obfuscate --split-debug-info=build/symbols/std-arm64
       - name: Flutter build Apple Music package APK (lite flavor, arm64-v8a, Impeller)
         run: |
           set -euo pipefail
@@ -267,7 +268,8 @@ jobs:
             --android-project-arg=md3EnableImpeller=true \
             --dart-define=APP_VERSION=${{ steps.version.outputs.version }} \
             --build-name=${{ steps.version.outputs.version }} \
-            --build-number=${{ steps.version.outputs.versionCode }}
+            --build-number=${{ steps.version.outputs.versionCode }} \
+            --obfuscate --split-debug-info=build/symbols/am-arm64
           mv "$lite_apk" "$apk_dir/app-apple-music-arm64-v8a-release.apk"
           mv "$lite_backup" "$lite_apk"
 
@@ -280,7 +282,8 @@ jobs:
             --dart-define=MD3_TV=true \
             --dart-define=APP_VERSION=${{ steps.version.outputs.version }} \
             --build-name=${{ steps.version.outputs.version }} \
-            --build-number=${{ steps.version.outputs.versionCode }}
+            --build-number=${{ steps.version.outputs.versionCode }} \
+            --obfuscate --split-debug-info=build/symbols/tv-arm64
 
       - name: Flutter build TV APK (tv flavor, armeabi-v7a, Skia)
         run: |
@@ -289,7 +292,8 @@ jobs:
             --dart-define=MD3_TV=true \
             --dart-define=APP_VERSION=${{ steps.version.outputs.version }} \
             --build-name=${{ steps.version.outputs.version }} \
-            --build-number=${{ steps.version.outputs.versionCode }}
+            --build-number=${{ steps.version.outputs.versionCode }} \
+            --obfuscate --split-debug-info=build/symbols/tv-arm32
 
       # ============================================================
       # 6.5 产物改名为发布名（ASCII）
@@ -448,15 +452,18 @@ jobs:
           # TV 包专项校验（与 ci.yml 同口径）：不含 USB 独占驱动，且 MD3_TV 旗标生效
           # 注意：函数内必须 return 而非 exit —— exit 只会退出子 shell，
           # 父脚本会继续往下跑，导致"报了错但仍然上传 Release"。
+          # 开启 --obfuscate 后 libapp.so 内无明文 Dart 符号，MD3_TV 旗标校验
+          # 改查 --split-debug-info 产出的符号表（JSON，保留原始函数/类名，
+          # 与 APK 一一对应：tv-arm64/tv-arm32 目录即本次 TV 构建产物）。
           check_tv() {
-            local f="$1" libdir="$2" name
+            local f="$1" symbols="$2" name
             name=$(basename "$f")
             if unzip -l "$f" | grep -E 'libusb_audio_driver' > /dev/null; then
               note_fail "TV 包混入 USB 独占驱动: $name"
               return 1
             fi
-            # libapp.so 内检索 Dart AOT 符号（未开 --obfuscate，ASCII 标识符可检索）
-            if unzip -p "$f" "$libdir/libapp.so" | grep -aq DpadFocusable; then
+            # 符号表内检索 Dart AOT 符号（等价于旧 libapp.so 明文检索）
+            if grep -aq DpadFocusable "$symbols"; then
               echo "  ✓ TV dpad 焦点符号: $name"
             else
               note_fail "TV 包缺少 dpad 焦点符号（MD3_TV 旗标未生效）: $name"
@@ -468,9 +475,9 @@ jobs:
           # bash 的 `A || B && C` 是**左结合** = `(A || B) && C`：
           # check_tv 成功(0) → `||` 短路 → `&& exit 1` **照样执行** ⇒
           # 校验全部通过反而中止构建（2026-10-12 v6.0.0 连续失败的真凶）。
-          for tv_pair in "$tv64_apk:lib/arm64-v8a" "$tv32_apk:lib/armeabi-v7a"; do
-            f="${tv_pair%%:*}"; libdir="${tv_pair##*:}"
-            if ! check_tv "$f" "$libdir"; then
+          for tv_pair in "$tv64_apk:build/symbols/tv-arm64/app.android-arm64.symbols" "$tv32_apk:build/symbols/tv-arm32/app.android-arm.symbols"; do
+            f="${tv_pair%%:*}"; symbols="${tv_pair##*:}"
+            if ! check_tv "$f" "$symbols"; then
               if [ "$VERIFY_MODE" = "strict" ]; then exit 1; fi
             fi
           done
@@ -616,6 +623,22 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # ============================================================
+      # 7.5 打包混淆符号表 + R8 mapping（崩溃栈还原唯一依据，随 Release 永久归档）
+      # ============================================================
+      - name: Pack obfuscation symbols
+        run: |
+          set -euo pipefail
+          test -d build/symbols
+          mkdir -p build/symbols-pack/symbols
+          cp -r build/symbols/. build/symbols-pack/symbols/
+          # R8 mapping.txt（Kotlin/Java 反混淆）；找不到不致命（混淆在 Dart 侧为主）
+          find android/app/build/outputs/mapping -name 'mapping.txt' \
+            -exec cp --parents {} build/symbols-pack/ \; || true
+          cd build
+          zip -qr "MD3Music-${{ steps.version.outputs.version }}-symbols.zip" symbols-pack
+          ls -lh "MD3Music-${{ steps.version.outputs.version }}-symbols.zip"
+
+      # ============================================================
       # 8. 创建/更新 GitHub Release（仅在 tag 真实存在时执行）
       #    append=true 保留历史资产，不会删除旧版本
       # ============================================================
@@ -631,6 +654,7 @@ jobs:
           append_body: false  # 默认行为：用自动生成的 changelog 替换 release 描述
           files: |
             build/app/outputs/flutter-apk/*MD3Music-*.apk
+            build/MD3Music-*-symbols.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -638,7 +662,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: md3music-apk-${{ steps.version.outputs.version }}
-          path: build/app/outputs/flutter-apk/*.apk
+          path: |
+            build/app/outputs/flutter-apk/*.apk
+            build/MD3Music-*-symbols.zip
           if-no-files-found: error
           retention-days: 30
 

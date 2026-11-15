@@ -74,7 +74,7 @@ class MainActivity : FlutterActivity() {
     private val PIP_CHANNEL = "com.md3music.md3music/pip"
     private val TASK_CHANNEL = "com.md3music.md3music/task"
     private var pendingDesktopLyricAction: String? = null
-    private var folderPickerResult: MethodChannel.Result? = null
+    private var folderPickerResult: SafeReplyOnceResult? = null
     private var fontPickerResult: MethodChannel.Result? = null
     private var backgroundPickerResult: MethodChannel.Result? = null
     // 悬浮窗识曲 channel：MediaProjection 授权结果等原生→Dart 回调
@@ -86,6 +86,35 @@ class MainActivity : FlutterActivity() {
     // IME 代理视图（TV 构建专用；FEATURE_TV=false 时为 null）。1×1 可聚焦 child，
     // 作为 FlutterView 的文本编辑器语义代理。
     private var imvProxyView: TvImeProxyView? = null
+
+    /// MethodChannel.Result 只放行首次 reply 的安全包装。
+    ///
+    /// 2026-11-12 TV 真机：点击「选择文件夹」→ SAF 立即返回 RESULT_CANCELED →
+    /// onActivityResult 里 `folderPickerResult?.success(null)` 时该 Result 已被
+    /// reply 过一次，`Reply already submitted`（IllegalStateException）直接闪退
+    /// （诊断包 android.log 4 次 FATAL，混淆栈 androidx.lifecycle.m.l 即 reply）。
+    /// 第一次 reply 的 ROM 时序路径无法静态还原，故统一幂等：重复 reply 静默
+    /// 丢弃并留日志，Dart 端拿到的仍是首次结果。
+    private class SafeReplyOnceResult(
+        private val origin: MethodChannel.Result
+    ) : MethodChannel.Result {
+        private val replied = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        override fun success(result: Any?) {
+            if (replied.compareAndSet(false, true)) origin.success(result)
+            else Log.w("MainActivity", "folder picker 重复 success 已丢弃")
+        }
+
+        override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+            if (replied.compareAndSet(false, true)) origin.error(errorCode, errorMessage, errorDetails)
+            else Log.w("MainActivity", "folder picker 重复 error 已丢弃")
+        }
+
+        override fun notImplemented() {
+            if (replied.compareAndSet(false, true)) origin.notImplemented()
+            else Log.w("MainActivity", "folder picker 重复 notImplemented 已丢弃")
+        }
+    }
 
     companion object {
         private const val FOLDER_PICKER_REQUEST_CODE = 9999
@@ -272,6 +301,8 @@ class MainActivity : FlutterActivity() {
         val createStartedAt = SystemClock.elapsedRealtime()
         Log.i("StartupTiming", "phase=activity_on_create_enter elapsed_realtime_ms=$createStartedAt")
         super.onCreate(savedInstanceState)
+        // 所有安卓手机统一：系统移除最近任务时由独立服务停播并销毁进程。
+        SwipeExitPolicy.startTaskRemovalService(applicationContext)
         Log.i(
             "StartupTiming",
             "phase=activity_on_create_super_complete elapsed_ms=${SystemClock.elapsedRealtime() - createStartedAt}",
@@ -1212,12 +1243,24 @@ class MainActivity : FlutterActivity() {
         folderPickerChannel.setMethodCallHandler { call, result ->
             when (call.method) {
                 "pickFolder" -> {
-                    folderPickerResult = result
+                    val safe = SafeReplyOnceResult(result)
+                    folderPickerResult = safe
                     val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                     }
-                    startActivityForResult(intent, FOLDER_PICKER_REQUEST_CODE)
+                    try {
+                        startActivityForResult(intent, FOLDER_PICKER_REQUEST_CODE)
+                    } catch (error: Exception) {
+                        // TV 等系统普遍没有 DocumentsUI（ACTION_OPEN_DOCUMENT_TREE
+                        // 无解析目标），未捕获的 ActivityNotFoundException 会直接
+                        // 闪退。这里区分"打不开"（PICKER_UNAVAILABLE，Dart 侧兜底
+                        // 内置目录选择弹层）与"用户取消"（success(null)）。
+                        Log.e("FolderPicker", "打开 SAF 目录选择器失败: ${error.message}")
+                        folderPickerResult = null
+                        // 走安全包装：即使 reply 已被 ROM 时序提交过也不会崩
+                        safe.error("PICKER_UNAVAILABLE", "系统目录选择器不可用: ${error.message}", null)
+                    }
                 }
                 "getPersistedUriPermission" -> {
                     val treeUri = call.argument<String>("uri")

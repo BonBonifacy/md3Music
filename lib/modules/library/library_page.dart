@@ -1,4 +1,5 @@
 import 'package:dpad/dpad.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:m3e_core/m3e_core.dart';
 import 'package:provider/provider.dart';
@@ -9,11 +10,13 @@ import '../../core/theme/app_dimens.dart';
 import '../../core/layout/page_title_alignment.dart';
 import '../../core/layout/page_layout.dart';
 import '../../core/layout/tv_fab_focus_bridge.dart';
+import '../../core/remote/tv_sheet_focus.dart';
 import '../../core/utils/app_text_context_menu.dart';
 import '../../core/utils/app_toast.dart';
 import '../../core/utils/tab_snap_physics.dart';
 import '../../providers/library_provider.dart';
 import '../../providers/local_favorites_provider.dart';
+import '../../widgets/tv_folder_picker_sheet.dart';
 import '../player/full_player_route.dart';
 import 'albums_page.dart';
 import 'artists_page.dart';
@@ -46,12 +49,31 @@ class _LibraryPageState extends State<LibraryPage>
   /// [_tvEnsureSheetFocus] 的自锁标记，保证只请求一次焦点。
   bool _tvScanMenuFocusRequested = false;
 
+  /// tv: 扫描文件夹管理面板「添加扫描文件夹」按钮的焦点节点（首停点/主动作）。
+  /// 该面板此前漏接首焦点，TV 上打开后遥控无任何落点（2026-11-12 反馈）。
+  final FocusNode _tvScanFolderAddNode =
+      FocusNode(debugLabel: 'scan_folder_add');
+
+  /// tv: 排除文件夹管理面板「添加排除文件夹」按钮的焦点节点（同上）。
+  final FocusNode _tvExcludedAddNode = FocusNode(debugLabel: 'excluded_add');
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 5, vsync: this);
-    _searchFocusNode = FocusNode();
-    if (kTvBuild) TvFabFocusBridge.instance.register(_tvFabNode);
+    _searchFocusNode = FocusNode(
+      // tv: 搜索框可被 dpad root 兜底选中，但选中后 framework 的文本编辑
+      // shortcuts 会把方向键消费成光标移动（dpad 的「光标到边逃逸」被顶掉，
+      // 真机遥控器焦点被吸进搜索框后出不去）。这里在事件到达 Shortcuts
+      // 之前拦截：上下键直接移出（单行无纵向光标），左右键光标到边才移出，
+      // 其余（含 IME 组合中）照常交给输入编辑。
+      onKeyEvent: kTvBuild ? _onSearchKeyEvent : null,
+    );
+    if (kTvBuild) {
+      TvFabFocusBridge.instance.register(_tvFabNode);
+      // tv: 焦点离开搜索框即收起为图标（见 [_onSearchFocusChanged]）。
+      _searchFocusNode.addListener(_onSearchFocusChanged);
+    }
     // 监听 FullPlayer 展开状态：展开时取消搜索框焦点，防止返回时自动弹输入法
     playerExpansion.addListener(_onPlayerExpansionChanged);
     // 页面加载后立即取消搜索框焦点，防止输入法自动弹出。
@@ -96,7 +118,7 @@ class _LibraryPageState extends State<LibraryPage>
   /// 功能操作不应保留输入焦点；在新路由记忆旧焦点前同步清除。
   void _dismissSearchFocus() {
     _searchFocusNode.unfocus();
-    if (!kTvBuild && _searchInputEnabled) {
+    if (_searchInputEnabled) {
       setState(() => _searchInputEnabled = false);
     }
     FocusManager.instance.primaryFocus?.unfocus();
@@ -112,6 +134,8 @@ class _LibraryPageState extends State<LibraryPage>
     _searchFocusNode.dispose();
     _tvFabNode.dispose();
     _tvScanMenuFirstNode.dispose();
+    _tvScanFolderAddNode.dispose();
+    _tvExcludedAddNode.dispose();
     super.dispose();
   }
 
@@ -153,7 +177,9 @@ class _LibraryPageState extends State<LibraryPage>
             : null,
         bottom: hasMusic || isScanning
             ? PreferredSize(
-                preferredSize: Size.fromHeight(compactHeader ? 64 : 116),
+                preferredSize: Size.fromHeight(
+                  compactHeader ? 64 : (_tvSearchCollapsed ? 64 : 116),
+                ),
                 child: ContentWidth(
                   child: Padding(
                     padding: EdgeInsets.fromLTRB(
@@ -175,16 +201,21 @@ class _LibraryPageState extends State<LibraryPage>
                               const Gap(AppSpacing.lg),
                               Expanded(
                                 flex: 3,
-                                child: _buildCategoryRow(textTheme, colorScheme,
-                                    showScan: isLandscape),
+                                child: _buildCategoryRow(textTheme,
+                                    colorScheme, showScan: isLandscape),
                               ),
                             ],
                           )
                         : Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              _buildSearchField(libraryProvider, colorScheme),
-                              const Gap(AppSpacing.sm),
+                              // tv: 收起态搜索图标已在分类行首，这里不再占行，
+                              // header 高度同步由 116 收到 64。
+                              if (!_tvSearchCollapsed) ...[
+                                _buildSearchField(
+                                    libraryProvider, colorScheme),
+                                const Gap(AppSpacing.sm),
+                              ],
                               _buildCategoryRow(
                                 textTheme,
                                 colorScheme,
@@ -242,9 +273,34 @@ class _LibraryPageState extends State<LibraryPage>
     );
   }
 
+  /// tv: 收起态只画搜索图标——搜索框一旦进入焦点路径，遥控器路过（焦点落到
+  /// TextField）就会立刻弹输入法，用户并没打算搜索。故 TV 下必须先按 OK
+  /// 展开成输入框，键盘才出现。
+  bool get _tvSearchCollapsed => kTvBuild && !_searchInputEnabled;
+
+  /// tv: 展开搜索输入框并移入焦点（触发输入法）。已展开时只把焦点要回来。
+  void _expandTvSearch() {
+    if (_searchInputEnabled) {
+      _searchFocusNode.requestFocus();
+      return;
+    }
+    setState(() => _searchInputEnabled = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _searchInputEnabled) _searchFocusNode.requestFocus();
+    });
+  }
+
+  /// tv: 焦点离开搜索框即收起为图标，避免展开态常驻后遥控再次路过又弹键盘。
+  void _onSearchFocusChanged() {
+    if (!mounted) return;
+    final bool focused = _searchFocusNode.hasFocus;
+    if (focused == _searchInputEnabled) return;
+    setState(() => _searchInputEnabled = focused);
+  }
+
   void _activateSearchFocus() {
     if (kTvBuild) {
-      _searchFocusNode.requestFocus();
+      _expandTvSearch();
       return;
     }
     if (_searchInputEnabled) return;
@@ -252,6 +308,76 @@ class _LibraryPageState extends State<LibraryPage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _searchInputEnabled) _searchFocusNode.requestFocus();
     });
+  }
+
+  /// tv: 搜索框焦点逃逸——见 initState 里 onKeyEvent 的注释。
+  ///
+  /// 单行搜索框没有纵向光标移动，上下键直接把焦点移出；左右键保留光标
+  /// 编辑语义，光标到文本边缘才移出。IME 组合中不拦截（输入法接管按键）。
+  KeyEventResult _onSearchKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final value = _searchController.value;
+    if (value.composing.isValid) {
+      return KeyEventResult.ignored; // IME 接管一切按键
+    }
+    final key = event.logicalKey;
+    final selection = value.selection;
+    // dpad root 的编程式移动：输入框持焦时直接移焦点（绕过光标编辑门槛）
+    final controller = node.context == null
+        ? null
+        : Dpad.maybeOf(node.context!);
+    if (controller == null) {
+      return KeyEventResult.ignored;
+    }
+    switch (key) {
+      case LogicalKeyboardKey.arrowUp:
+        controller.moveUp();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowDown:
+        controller.moveDown();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowLeft:
+        if (selection.isValid &&
+            selection.isCollapsed &&
+            selection.baseOffset <= 0) {
+          controller.moveLeft();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      case LogicalKeyboardKey.arrowRight:
+        if (selection.isValid &&
+            selection.isCollapsed &&
+            selection.baseOffset >= value.text.length) {
+          controller.moveRight();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      default:
+        return KeyEventResult.ignored;
+    }
+  }
+
+  /// tv: 搜索入口图标（收起态）。遥控器点选/按 OK 才展开输入框，
+  /// 焦点路过图标不会触发输入法（口径同 [TvShell] 的搜索按钮）。
+  Widget _buildTvSearchIcon(ColorScheme cs) {
+    return SizedBox(
+      height: 48,
+      width: 48,
+      child: DpadFocusable(
+        debugLabel: 'library_search_icon',
+        tapToSelect: false,
+        onSelect: _expandTvSearch,
+        child: IconButton(
+          visualDensity: const VisualDensity(horizontal: -3, vertical: -2),
+          constraints: const BoxConstraints.tightFor(width: 48, height: 48),
+          icon: const Icon(Icons.search, size: 22),
+          tooltip: '搜索本地音乐',
+          onPressed: _expandTvSearch,
+        ),
+      ),
+    );
   }
 
   Widget _buildSearchField(LibraryProvider library, ColorScheme cs) {
@@ -301,6 +427,11 @@ class _LibraryPageState extends State<LibraryPage>
   Widget _buildCategoryRow(TextTheme textTheme, ColorScheme colorScheme,
       {required bool showScan, bool centered = false}) => Row(
     children: [
+      // tv: 搜索图标并入分类行首，不再单独占一整行（收起态避免多出一段空白）。
+      if (_tvSearchCollapsed) ...[
+        _buildTvSearchIcon(colorScheme),
+        const Gap(AppSpacing.sm),
+      ],
       Expanded(child: _buildCategoryTabs(textTheme, centered: centered)),
       if (showScan) ...[
         const Gap(AppSpacing.sm),
@@ -524,10 +655,23 @@ class _LibraryPageState extends State<LibraryPage>
                     ListTile(
                       leading: const Icon(Icons.refresh),
                       title: const Text('扫描音乐'),
-                      subtitle: const Text('扫描默认目录和已添加的文件夹'),
+                      subtitle: Text(library.scanOnlySelectedFolders
+                          ? '只扫描已添加的文件夹及其子目录'
+                          : '扫描默认目录和已添加的文件夹'),
                       onTap: rescan,
                     ),
                     focusNode: _tvScanMenuFirstNode,
+                  ),
+                  _tvSheetRow(
+                    () => library.setScanOnlySelectedFolders(
+                        !library.scanOnlySelectedFolders),
+                    debugLabel: 'scan_menu_only_selected',
+                    SwitchListTile(
+                      title: const Text('只扫描指定文件夹'),
+                      subtitle: const Text('跳过系统媒体库和默认目录，仅扫描已添加的文件夹'),
+                      value: library.scanOnlySelectedFolders,
+                      onChanged: library.setScanOnlySelectedFolders,
+                    ),
                   ),
                   // 打开扫描文件夹管理面板（列出已添加项 + 移除）。
                   // 此前直接调文件夹选择器，加完就看不到有哪些、也没法移除，
@@ -539,7 +683,7 @@ class _LibraryPageState extends State<LibraryPage>
                       leading: const Icon(Icons.create_new_folder_outlined),
                       title: const Text('添加扫描文件夹'),
                       subtitle: Text(
-                          '选择额外的文件夹进行扫描'
+                          '管理要扫描的文件夹'
                           '${provider.scanFolders.isEmpty ? '' : '（已添加 ${provider.scanFolders.length} 个）'}'),
                       onTap: manageScanFolders,
                     ),
@@ -614,7 +758,11 @@ class _LibraryPageState extends State<LibraryPage>
 
             Future<void> addFolder() async {
               _dismissSearchFocus();
-              final success = await provider.addScanFolder();
+              // 先试系统 SAF 选择器，打不开（PICKER_UNAVAILABLE，TV 常见）才
+              // 兜底内置目录选择弹层——见 [pickFolderTv]。
+              final tvPath = await pickFolderTv(context, title: '选择扫描文件夹');
+              if (tvPath == null) return; // 用户取消
+              final success = await provider.addScanFolder(path: tvPath);
               if (success && ctx.mounted) {
                 setModalState(() {});
                 if (context.mounted) {
@@ -623,7 +771,12 @@ class _LibraryPageState extends State<LibraryPage>
               }
             }
 
-            return SafeArea(
+            // tv: 首焦点交给「添加扫描文件夹」（主动作）。此前面板漏接
+            // 首焦点，TV 上打开后遥控无任何落点；与 [_showScanMenu] 同一
+            // 修法，改用公共组件 [TvSheetFocus]。
+            return TvSheetFocus(
+              targetNode: _tvScanFolderAddNode,
+              child: SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(AppSpacing.lg),
                 child: Column(
@@ -652,7 +805,9 @@ class _LibraryPageState extends State<LibraryPage>
                     ),
                     const Gap(AppSpacing.xs),
                     Text(
-                      '已添加的文件夹会与默认目录一起扫描，重启后依然生效',
+                      provider.scanOnlySelectedFolders
+                          ? '仅扫描下方文件夹及其子目录，重启后依然生效'
+                          : '已添加的文件夹会与默认目录一起扫描，重启后依然生效',
                       style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
                         color: Theme.of(ctx).colorScheme.onSurfaceVariant,
                       ),
@@ -708,16 +863,18 @@ class _LibraryPageState extends State<LibraryPage>
                       width: double.infinity,
                       child: _tvSheetRow(
                         addFolder,
-                        debugLabel: 'scan_folder_add',
                         FilledButton.tonalIcon(
                           icon: const Icon(Icons.create_new_folder_outlined),
                           label: const Text('添加扫描文件夹'),
                           onPressed: addFolder,
                         ),
+                        debugLabel: 'scan_folder_add',
+                        focusNode: _tvScanFolderAddNode,
                       ),
                     ),
                   ],
                 ),
+              ),
               ),
             );
           },
@@ -739,7 +896,14 @@ class _LibraryPageState extends State<LibraryPage>
 
             Future<void> addExcluded() async {
               _dismissSearchFocus();
-              final success = await provider.addExcludedFolder();
+              // 同扫描文件夹：先系统 SAF，打不开才兜底内置弹层。
+              final tvPath = await pickFolderTv(
+                context,
+                title: '选择要排除的文件夹',
+              );
+              if (tvPath == null) return; // 用户取消
+              final success =
+                  await provider.addExcludedFolder(path: tvPath);
               if (success) {
                 setModalState(() {});
                 if (context.mounted) {
@@ -748,7 +912,10 @@ class _LibraryPageState extends State<LibraryPage>
               }
             }
 
-            return SafeArea(
+            // tv: 首焦点交给「添加排除文件夹」（主动作），同扫描文件夹面板。
+            return TvSheetFocus(
+              targetNode: _tvExcludedAddNode,
+              child: SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(AppSpacing.lg),
                 child: Column(
@@ -846,6 +1013,7 @@ class _LibraryPageState extends State<LibraryPage>
                     const Gap(AppSpacing.sm),
                   ],
                 ),
+              ),
               ),
             );
           },

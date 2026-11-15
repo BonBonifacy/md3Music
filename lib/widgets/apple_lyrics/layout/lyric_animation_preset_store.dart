@@ -158,6 +158,9 @@ class LyricAnimationPresetStore extends ChangeNotifier {
       'staggerFromCurrentLine': false,
       'glowThresholdMode': 'fixed',
       'fillMode': 'sweep',
+      // 透明度取默认：复刻引入该设置前的历史观感
+      'playedOpacity': 1.0,
+      'unplayedOpacity': 0.4,
     },
   );
 
@@ -194,6 +197,9 @@ class LyricAnimationPresetStore extends ChangeNotifier {
       'staggerFromCurrentLine': true,
       'glowThresholdMode': 'fixed',
       'fillMode': 'sweep',
+      // 透明度取默认：复刻引入该设置前的历史观感
+      'playedOpacity': 1.0,
+      'unplayedOpacity': 0.4,
     },
   );
 

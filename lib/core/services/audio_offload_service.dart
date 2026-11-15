@@ -18,7 +18,7 @@ import 'viper_master_service.dart';
 /// ## 决策模型
 /// - **用户开关** [userEnabled]：持久化在 [keyEnabled]，唯一由用户设置页控制；
 /// - **让路原因** [yieldReason]：由 PlayerProvider 注入的若干判定器算出。只要
-///   有任何一条成立，硬解就不该开（DSP / 频谱 / 变速 / 独占输出都与 offload 互斥）；
+///   有任何一条成立，硬解就不该开（划掉退出 / DSP / 频谱 / 变速 / 独占输出都与 offload 互斥）；
 /// - **平台支持** [platformSupported]：原生报告 `apiLevel >= 29` 才成立；
 /// - **生效值** [effective] = 三者同时满足。
 ///
@@ -93,6 +93,9 @@ class AudioOffloadService extends ChangeNotifier {
   bool _disposed = false;
 
   bool _userEnabled = false;
+
+  /// 划掉退出开启时禁用 offload，避免进程死亡后 DSP 仍继续输出尾音。
+  bool _swipeExitEnabled = true;
 
   /// 是否已向原生下发过至少一次（区分「默认关闭」与「确认关闭」）。
   bool _hasPushed = false;
@@ -198,12 +201,25 @@ class AudioOffloadService extends ChangeNotifier {
     if (_inited) return;
     _inited = true;
 
+    // 桌面端 / Web 没有 offload 通路（supportsAudioOffload 仅 Android）：
+    // 整个决策器不启动 —— 不读 pref、不注册通道与监听、不下发、不产生
+    // 「已让路/已恢复」提示。否则 Windows 上会因本地残留 pref 或划掉退出
+    // 默认值弹出「硬件解码播放已让路」这类无意义 Toast。
+    if (!supportsAudioOffload) return;
+
     try {
       // 开关持久化统一走 SettingsRepository（键与 [keyEnabled] 是同一字面量），
       // 避免同一条设置在两个类里各读一遍 prefs、后续改名漏改一处。
       _userEnabled = await SettingsRepository().getAudioOffloadEnabled();
     } catch (e) {
       debugPrint('[$_tag] 读取 $keyEnabled 失败: $e');
+    }
+
+    try {
+      _swipeExitEnabled =
+          await SettingsRepository().getSwipeExitOnTaskRemoved();
+    } catch (e) {
+      debugPrint('[$_tag] 读取划掉退出开关失败: $e');
     }
 
     try {
@@ -297,11 +313,20 @@ class AudioOffloadService extends ChangeNotifier {
     if (!wasEnabled && _userEnabled) _probeMissingCapabilities();
   }
 
+  /// 同步「划掉后台自动退出」状态。持久化由设置页负责，这里只重算输出通路。
+  Future<void> setSwipeExitEnabled(bool value) async {
+    if (_swipeExitEnabled == value) return;
+    _swipeExitEnabled = value;
+    await refresh();
+  }
+
   /// 重算让路原因并按时机下发。
   ///
   /// [immediate] 为 true 时即使「正在播放」也立刻下发（用于必须马上让路的场景，
   /// 例如变速切到非 1.0 倍）。恢复路径默认不 immediate，等下一次起播。
   Future<void> refresh({bool immediate = false}) async {
+    // 非 Android 平台整个决策器未启动（见 [init]），任何刷新都不产生副作用。
+    if (!supportsAudioOffload) return;
     final String? previousReason = _yieldReason;
     final bool previousEffective = effective;
 
@@ -505,6 +530,8 @@ class AudioOffloadService extends ChangeNotifier {
   ///
   /// 只记提示 + 标记本轮兜底已用，不擅自关用户开关 —— 是否继续尝试由用户决定。
   void notePlatformFallback() {
+    // 非 Android 平台没有硬解通路，不存在「回退到软解」一说。
+    if (!supportsAudioOffload) return;
     if (_fallbackApplied) return;
     _fallbackApplied = true;
     _notice = '硬件解码不可用，已回退到软件解码';
@@ -609,6 +636,7 @@ class AudioOffloadService extends ChangeNotifier {
   }
 
   String? _computeNaturalReason() {
+    if (_swipeExitEnabled) return '划掉后台自动退出已开启';
     if (_hit(dspActive)) return '蝰蛇母带已开启';
     if (_hit(equalizerActive)) return '均衡器已开启';
     if (_hit(volumeNormalizationActive)) return '音量均衡已开启';

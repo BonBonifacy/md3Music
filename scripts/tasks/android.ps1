@@ -468,6 +468,8 @@ function Get-ApkEntries([string]$Path) {
 }
 # 在 APK 的 lib/arm64-v8a/libapp.so 里找 Dart 符号名（AOT 快照保留 ASCII 标识符；
 # 未开 --obfuscate，类/函数名可检索）。用于校验 TV 代码双向不编入。
+# 注意：仅本地构建口径有效——CI release（main.yml/ci.yml）2026-11-12 起开
+# --obfuscate，那边同口径校验已改查 --split-debug-info 符号表，勿混淆。
 function Test-ApkDartSymbol {
     param([Parameter(Mandatory)][string]$Apk, [Parameter(Mandatory)][string]$Symbol, [Parameter(Mandatory)][bool]$ExpectPresent)
     Add-Type -AssemblyName System.IO.Compression.FileSystem

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -1617,7 +1618,7 @@ class KugouArtistVideos {
     } catch (e) {
       // 真机定位上游字段名用，不能静默吞掉
       // ignore: avoid_print
-      print('[ArtistMvDebug] parse error: $e, raw: $json');
+      debugPrint('[ArtistMvDebug] parse error: $e, raw: $json');
       rethrow;
     }
   }
@@ -2469,7 +2470,7 @@ class KugouUserVipDetail {
                 // 概念版VIP: product_type 为 "svip"
                 final pt = b['product_type']?.toString() ?? '';
                 final isConcept = pt == 'svip';
-                print(
+                debugPrint(
                   '[VIP_DEBUG] product_type=$pt isConcept=$isConcept end_time=$t',
                 );
                 if (isConcept) {

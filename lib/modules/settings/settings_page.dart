@@ -27,6 +27,7 @@ import '../../core/layout/page_layout.dart';
 import '../../core/layout/ui_density.dart';
 import '../../core/remote/remote_slider.dart';
 import '../../core/services/audio_service_io.dart';
+import '../../core/services/audio_offload_service.dart';
 import '../../core/services/volume_normalization_service.dart';
 import '../../core/services/background_image_loader.dart';
 import '../../core/services/car_with_service.dart';
@@ -72,6 +73,7 @@ import '../../core/services/depth_cover_feature.dart';
 import '../../utils/landscape_immersive.dart';
 import '../../widgets/player_top_bar_actions.dart';
 import '../../widgets/player_top_bar_tab_dots.dart';
+import '../../widgets/apple_lyrics/layout/lyric_aux_scope.dart';
 import '../../widgets/apple_lyrics/layout/lyric_preferences.dart';
 import '../../widgets/apple_lyrics/utils/lyric_credit_filter.dart';
 import '../../widgets/md3_lyric_preferences.dart';
@@ -235,6 +237,8 @@ class _SettingsPageState extends State<SettingsPage>
   bool _useGlowEffect = false;
   // 辉光字符缩放：关闭后强调字不再放大与左右外扩，只留上浮与辉光呼吸
   bool _lyricGlowCharScale = true;
+  // 歌词字体柔边抗锯齿（默认关闭）
+  bool _lyricSoftEdge = false;
   bool _useFlowingBackground = false;
   bool _useDuetLayout = false;
   bool _lyricEcoMode = false;
@@ -244,8 +248,11 @@ class _SettingsPageState extends State<SettingsPage>
   // 平衡行换行：AM / MD 各一套独立偏好（key 不同，互不影响）
   bool _lyricLineBalanceAm = false;
   bool _lyricLineBalanceMd3 = false;
+  // 副行（翻译 / 罗马音）显示范围：AM 与 MD3 两张播放页共用同一份偏好
+  LyricAuxScope _lyricAuxScope = LyricAuxScope.currentLine;
   // 屏蔽歌词作者信息（参考 EchoMusic 歌词过滤）：开启后播放页/桌面歌词等
-  // 显示面剔除作词/作曲/编曲等制作名单与版权声明行，只显示纯歌词。
+  // 显示面剔除在线歌词头部的「作者 - 歌名」首行、作词/作曲等制作名单与
+  // 版权声明行，只显示纯歌词。
   bool _hideLyricCredits = false;
   // 自定义过滤正则（空串 = 内置默认规则）
   String _lyricCreditPattern = '';
@@ -304,6 +311,9 @@ class _SettingsPageState extends State<SettingsPage>
   bool _mvAudioFallbackEnabled = false;
   // 记忆播放状态开关（默认开启）：冷启动恢复上次播放的歌曲与进度
   bool _restoreMemoryEnabled = true;
+  // 划掉后台自动退出开关（默认开启）：仅 Android 非 TV 显示；
+  // 所有手机划掉后台 = 停播并退出进程（不依赖 ROM 杀进程时机）
+  bool _swipeExitOnTaskRemoved = true;
   int _idleKeepaliveStopMinutes = 10;
   // 启动时自动播放（默认关闭）。后两项仅在它打开时才有意义，故一并收在这里。
   // 音源下拉直接用 StartupAutoPlaySource.values，保证与启动流程的解析口径
@@ -947,6 +957,8 @@ class _SettingsPageState extends State<SettingsPage>
         .getMvAudioFallbackEnabled();
     final restoreMemoryEnabled = await _settingsRepository
         .getRestoreMemoryEnabled();
+    final swipeExitOnTaskRemoved = await _settingsRepository
+        .getSwipeExitOnTaskRemoved();
     final idleKeepaliveStopMinutes = await _settingsRepository
         .getIdleKeepaliveStopMinutes();
     final startupAutoPlayEnabled = await _settingsRepository
@@ -1040,6 +1052,7 @@ class _SettingsPageState extends State<SettingsPage>
       _useGaussianBlur = LyricPreferences.instance.useGaussianBlur;
       _useGlowEffect = LyricPreferences.instance.useGlowEffect;
       _lyricGlowCharScale = LyricPreferences.instance.useGlowCharScale;
+      _lyricSoftEdge = LyricPreferences.instance.softEdgeAntiAlias;
       _useFlowingBackground = LyricPreferences.instance.useFlowingBackground;
       _useDuetLayout = LyricPreferences.instance.useDuetLayout;
       _lyricEcoMode = LyricPreferences.instance.ecoMode;
@@ -1050,6 +1063,7 @@ class _SettingsPageState extends State<SettingsPage>
       _lyricLineBalanceMd3 = Md3LyricPreferences.instance.lineBalance;
       _hideLyricCredits = LyricPreferences.instance.hideLyricCredits;
       _lyricCreditPattern = LyricPreferences.instance.creditPattern;
+      _lyricAuxScope = LyricPreferences.instance.auxScope;
       _bluetoothLyricEnabled = bluetoothLyricEnabled;
       _bluetoothLyricCompressArt = bluetoothLyricCompressArt;
       _depthCoverEnabled = depthCoverEnabled;
@@ -1091,6 +1105,7 @@ class _SettingsPageState extends State<SettingsPage>
       _showQualityDowngradeToast = showQualityDowngradeToast;
       _mvAudioFallbackEnabled = mvAudioFallbackEnabled;
       _restoreMemoryEnabled = restoreMemoryEnabled;
+      _swipeExitOnTaskRemoved = swipeExitOnTaskRemoved;
       _idleKeepaliveStopMinutes = idleKeepaliveStopMinutes;
       _startupAutoPlayEnabled = startupAutoPlayEnabled;
       _startupAutoPlaySource = startupAutoPlaySource;
@@ -1648,12 +1663,15 @@ class _SettingsPageState extends State<SettingsPage>
           builder: _buildAudioQualitySubpage,
         ),
         // search-sub: 硬解 offload 硬件解码 省电 直通 解码能力 矩阵
-        SettingsSubpage(
-          title: '硬件解码播放',
-          icon: Icons.memory_outlined,
-          description: '硬解开关、设备解码器能力与 offload 协商',
-          builder: _buildAudioOffloadSubpage,
-        ),
+        // 硬件解码播放：依赖 Media3 audio offload + MediaCodec（API≥29 协商），
+        // 仅 Android 存在该通路，桌面端隐藏（详见 supportsAudioOffload）。
+        if (supportsAudioOffload)
+          SettingsSubpage(
+            title: '硬件解码播放',
+            icon: Icons.memory_outlined,
+            description: '硬解开关、设备解码器能力与 offload 协商',
+            builder: _buildAudioOffloadSubpage,
+          ),
         // 桌面端隐藏整个「音效与音量」分类：它下面所有子项（均衡器 / 音效库 /
         // 蝰蛇母带 / 音量均衡 / 参考响度）都依赖 Android AudioSession 绑定，
         // 全部已按supportsSystemAudioEffects 等门控隐藏。分类留着只会让用户
@@ -1947,6 +1965,8 @@ class _SettingsPageState extends State<SettingsPage>
                 (supportsUsbExclusive || e.category != 'USB 独占') &&
                 (supportsSystemAudioEffects ||
                     !_kAndroidOnlyAudioLabels.contains(e.label)) &&
+                // 硬件解码播放：offload/MediaCodec 为 Android 专属，桌面端整页隐藏
+                (supportsAudioOffload || e.subpage != '硬件解码播放') &&
                 (isAndroidPlatform ||
                     !_kAndroidOnlySpectrumLabels.contains(e.label)) &&
                 carWithEntryAllowed(e, carWithSupported: _carWithUiSupported) &&
@@ -2467,11 +2487,61 @@ class _SettingsPageState extends State<SettingsPage>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // 副行显示范围三选一（翻译 / 罗马音共用）。AM 与经典播放页都读这一项，
+        // 故不加 `_useAmStylePlayer` 门控。
+        // M3E 字段式下拉（TV 走 TvDropdownMenu 包装，触屏直出 M3EDropdownMenu）：
+        // 初始选中值由 M3EDropdownItem.selected 表达（无 initialSelection 参数），
+        // 每次 build 按当前值重建 items 是本仓既定手法；onSelectionChanged 必须
+        // 同值早退，否则「setItems 回调 → setState → 重建 → setItems」无限回环。
+        // 下拉框不能放 trailing：字段式控件会撑出近整行宽度，把 title 挤到
+        // 竖排（见「暂停后自动停止保活」处的同款注释），控件下沉到 subtitle。
+        // search: 副行 翻译 罗马音 音译 双语 所有行 全部显示 已播 已唱 只显示当前 显示范围
+        ListTile(
+          title: const Text('副行显示范围'),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('翻译 / 罗马音在哪些歌词行上显示'),
+              const Gap(AppSpacing.sm),
+              TvDropdownMenu<LyricAuxScope>(
+                items: [
+                  for (final scope in LyricAuxScope.values)
+                    M3EDropdownItem(
+                      label: auxScopeLabel(scope),
+                      value: scope,
+                      selected: _lyricAuxScope == scope,
+                    ),
+                ],
+                singleSelect: true,
+                showChipAnimation: false,
+                fieldStyle: M3EDropdownFieldStyle(
+                  hintText: '选择副行显示范围',
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.md,
+                    vertical: AppSpacing.sm,
+                  ),
+                  selectedTextStyle: Theme.of(context).textTheme.bodyMedium,
+                ),
+                onSelectionChanged: (selected) {
+                  // 单选下再次点击已选中项会被取消选中：强制重建恢复原值
+                  if (selected.isEmpty) {
+                    setState(() {});
+                    return;
+                  }
+                  final scope = selected.first.value;
+                  if (scope == _lyricAuxScope) return;
+                  _selectAuxScope(scope);
+                },
+              ),
+            ],
+          ),
+        ),
         // 屏蔽歌词作者信息（参考 EchoMusic 歌词过滤）
         // search: 屏蔽 隐藏 过滤 制作名单 版权声明 作词 作曲 纯歌词
         SwitchListTile(
           title: const Text('隐藏歌词作者信息'),
-          subtitle: const Text('隐藏作词/作曲/编曲等制作名单与版权声明行，只显示纯歌词'),
+          subtitle: const Text('隐藏「作者 - 歌名」首行与作词/作曲等制作名单、版权声明行，只显示纯歌词'),
           value: _hideLyricCredits,
           onChanged: (v) {
             AppHaptics.lightImpact(HapticCategory.control);
@@ -2504,6 +2574,16 @@ class _SettingsPageState extends State<SettingsPage>
         const _LyricTimeOffsetTile(),
       ],
     );
+  }
+
+  /// 选中副行显示范围：写偏好并轻反馈（值未变则不动）。
+  ///
+  /// 偏好是 AM / MD3 两张播放页共享的单值，写入后各页监听即时生效。
+  void _selectAuxScope(LyricAuxScope scope) {
+    if (_lyricAuxScope == scope) return;
+    AppHaptics.lightImpact(HapticCategory.control);
+    setState(() => _lyricAuxScope = scope);
+    LyricPreferences.instance.setAuxScope(scope);
   }
 
   /// 自定义「歌词作者信息」过滤正则的弹层（参考 EchoMusic 过滤表达式设置）。
@@ -3824,6 +3904,10 @@ class _SettingsPageState extends State<SettingsPage>
         // 必须挂在非 tile 节点上：生成器遇到 search-item 注释所在的 tile 会
         // 走手写分支、跳过该 tile 的标题自动收集（丢「歌词动画」自身条目）。
         // search-item: 歌词模糊强度 | 歌词 模糊 强度 程度 高斯模糊
+        // search-item: 模糊等级渐变切换 | 模糊 等级 渐变 切换 交叉淡入 淡出 透明度 硬切 过渡 crossfade
+        // search-item: 模糊等级渐变时长 | 模糊 等级 渐变 时长 过渡时间 毫秒 ms 交叉淡入 淡出 1000
+        // search-item: 提前换行 | 提前 换行 预换行 逐字完成 延迟 等待 字内渐变 缩放 模糊
+        // search-item: 模糊褪去时长 | 模糊 褪去 时长 淡出 消失 模糊图 开唱 交接 毫秒 ms 1000
         // search-item: 动态颜色混色比例 | 动态颜色 混色 比例 取色 封面 高亮 已播
         // search-item: 辉光强度 | 辉光 发光 强度 亮度
         // search-item: 辉光触发阈值 | 辉光 发光 阈值 灵敏度
@@ -3834,6 +3918,8 @@ class _SettingsPageState extends State<SettingsPage>
         // search-item: 间奏点圆点大小 | 间奏 间奏点 节奏点 圆点 大小 半径 点
         // search-item: 间奏点间距 | 间奏 间奏点 节奏点 间距 距离
         // search-item: 动画预设 | 预设 动画预设 保存预设 切换预设 删除预设 导入 导出 json 剪贴板
+        // search-item: 已播歌词透明度 | 已播 歌词 透明度 不透明度 亮态 alpha 亮度
+        // search-item: 未播歌词透明度 | 未播 歌词 透明度 不透明度 暗态 alpha 暗度
         _buildGroupLabel('歌词动效调节', colorScheme),
         // 歌词动画入口：动画参数、歌词模糊强度、辉光触发阈值统一在独立子页无极调节，
         // 排在歌词省电模式（特效兜底开关）之后、音乐频谱分组之前。
@@ -4420,6 +4506,22 @@ class _SettingsPageState extends State<SettingsPage>
                   AppHaptics.lightImpact(HapticCategory.control);
                   setState(() => _lyricGlowCharScale = v);
                   LyricPreferences.instance.setUseGlowCharScale(v);
+                }
+              : null,
+        ),
+        // search: 字幕 柔边 抗锯齿 字体 边缘 柔滑 平滑 锯齿 font smooth antialias
+        SwitchListTile(
+          title: const Text('歌词字体柔边'),
+          subtitle: const Text(
+            '给歌词与翻译的字形边缘做轻微柔化，观感更柔滑'
+            '（默认关闭，开启后轻微增加绘制开销）',
+          ),
+          value: _lyricSoftEdge,
+          onChanged: _useAmStylePlayer
+              ? (v) {
+                  AppHaptics.lightImpact(HapticCategory.control);
+                  setState(() => _lyricSoftEdge = v);
+                  LyricPreferences.instance.setSoftEdgeAntiAlias(v);
                 }
               : null,
         ),
@@ -5475,6 +5577,25 @@ class _SettingsPageState extends State<SettingsPage>
             context.read<PlayerProvider>().setRestoreMemoryEnabled(value);
           },
         ),
+        // 划掉后台自动退出：仅 Android 手机（非 TV）显示，默认开启。
+        // 开启时所有手机从最近任务划掉 = 停止播放并退出进程（由原生
+        // stopWithTask 任务移除监听与 onTaskRemoved 双路径执行，不依赖 ROM
+        // 的杀进程时机）。关闭后走现状逻辑（划掉不停播）。
+        // search: 划掉 后台 清后台 上滑 退出 进程 三星 小米 OneUI MIUI 原生 停止播放 关闭应用
+        if (!kTvBuild && Platform.isAndroid)
+          SwitchListTile(
+            title: const Text('划掉后台自动退出'),
+            subtitle: const Text(
+              '立即停止播放并退出进程；开启时硬件解码自动让路',
+            ),
+            value: _swipeExitOnTaskRemoved,
+            onChanged: (value) async {
+              AppHaptics.lightImpact(HapticCategory.control);
+              setState(() => _swipeExitOnTaskRemoved = value);
+              await _settingsRepository.setSwipeExitOnTaskRemoved(value);
+              await AudioOffloadService.instance.setSwipeExitEnabled(value);
+            },
+          ),
         // search: 暂停 保活 后台 耗电 省电 停止通知 恢复播放
         // 下拉框不能放 trailing：TvDropdownMenu 是字段式控件，会给自身撑出
         // 接近整行的宽度，把 ListTile 的 title 挤到只剩一两字宽（真机表现为

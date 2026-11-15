@@ -93,19 +93,22 @@ void main() {
       }
     });
 
-    test('当前行（scale=1.0）：所有 word alpha 初始为 dynamicDarkAlpha', () {
+    test('当前行（scale=1.0）：所有 word alpha 初始为 sweepDarkAlpha', () {
+      // 当前行未播字与下方未播行同值（darkAlphaFor(0) = alphaBase = 0.2），
+      // 不再随 factor 放大到 unplayedOpacity（用户 2026-11-13 反馈"字内渐变
+      // 未播部分比下方未播歌词亮"）。
       renderer.setLineState(isActive: true, scale: LyricLayout.activeScale);
       renderer.paintLine(makeCanvas(), ui.Offset.zero, line, 24);
       final alphas = renderer.wordAlphas;
       expect(alphas.length, 4);
       for (final a in alphas.values) {
-        expect(a, closeTo(renderer.dynamicDarkAlpha, 1e-9));
+        expect(a, closeTo(renderer.sweepDarkAlpha, 1e-9));
       }
     });
   });
 
   group('tick 后状态推进', () {
-    test('progress=0.25：word 0 已播趋向 1.0，word 1/2/3 未播趋向 0.4', () {
+    test('progress=0.25：word 0 已播趋向 1.0，word 1/2/3 未播趋向 sweepDarkAlpha', () {
       renderer.setLineState(isActive: true, scale: LyricLayout.activeScale);
       renderer.paintLine(makeCanvas(), ui.Offset.zero, line, 24);
 
@@ -114,9 +117,9 @@ void main() {
         renderer.tick(0.016, 1000);
       }
       expect(renderer.wordAlphas[0]!, closeTo(1.0, 0.01));
-      expect(renderer.wordAlphas[1]!, closeTo(0.4, 0.01));
-      expect(renderer.wordAlphas[2]!, closeTo(0.4, 0.01));
-      expect(renderer.wordAlphas[3]!, closeTo(0.4, 0.01));
+      expect(renderer.wordAlphas[1]!, closeTo(renderer.sweepDarkAlpha, 0.01));
+      expect(renderer.wordAlphas[2]!, closeTo(renderer.sweepDarkAlpha, 0.01));
+      expect(renderer.wordAlphas[3]!, closeTo(renderer.sweepDarkAlpha, 0.01));
     });
 
     test('progress 推进到 1.0：所有 word 已播，alpha 趋向 1.0', () {
@@ -150,13 +153,14 @@ void main() {
         expect(a, closeTo(renderer.dynamicDarkAlpha, 1e-9));
       }
 
-      // 切到当前行：progress=0 时所有字未播，目标 = dynamicDarkAlpha
+      // 切到当前行：progress=0 时所有字未播，目标 = sweepDarkAlpha
+      // （与切行前同为 0.2：切行不再让整行未唱部分突然亮半档）
       renderer.setLineState(isActive: true, scale: LyricLayout.activeScale);
       for (int i = 0; i < 100; i++) {
         renderer.tick(0.016, 0);
       }
       for (final a in renderer.wordAlphas.values) {
-        expect(a, closeTo(renderer.dynamicDarkAlpha, 0.01));
+        expect(a, closeTo(renderer.sweepDarkAlpha, 0.01));
       }
     });
 
@@ -164,7 +168,7 @@ void main() {
       renderer.setLineState(isActive: true, scale: LyricLayout.activeScale);
       renderer.paintLine(makeCanvas(), ui.Offset.zero, line, 24);
       for (final a in renderer.wordAlphas.values) {
-        expect(a, closeTo(renderer.dynamicDarkAlpha, 1e-9));
+        expect(a, closeTo(renderer.sweepDarkAlpha, 1e-9));
       }
 
       // 切到非当前行：非当前行 SOLID 模式，所有字目标 = dynamicDarkAlpha
@@ -248,8 +252,8 @@ void main() {
       }
       expect(renderer.wordAlphas[0]!, closeTo(1.0, 0.01));
       expect(renderer.wordAlphas[1]!, closeTo(1.0, 0.01));
-      expect(renderer.wordAlphas[2]!, closeTo(0.4, 0.01));
-      expect(renderer.wordAlphas[3]!, closeTo(0.4, 0.01));
+      expect(renderer.wordAlphas[2]!, closeTo(renderer.sweepDarkAlpha, 0.01));
+      expect(renderer.wordAlphas[3]!, closeTo(renderer.sweepDarkAlpha, 0.01));
     });
 
     test('ATTACK 速度比 RELEASE 快：相同帧数下变亮幅度大于变暗幅度', () {
@@ -459,10 +463,11 @@ void main() {
         ],
       );
       renderer.paintLine(makeCanvas(), ui.Offset.zero, newLine, 24);
-      // alpha map 应重新初始化为新 line 的 word 数量，值为 dynamicDarkAlpha=0.4
+      // alpha map 应重新初始化为新 line 的 word 数量，值为 sweepDarkAlpha=0.2
+      // （当前行未播字与下方未播行同值）
       expect(renderer.wordAlphas.length, 2);
       for (final a in renderer.wordAlphas.values) {
-        expect(a, closeTo(0.4, 1e-9));
+        expect(a, closeTo(renderer.sweepDarkAlpha, 1e-9));
       }
     });
   });

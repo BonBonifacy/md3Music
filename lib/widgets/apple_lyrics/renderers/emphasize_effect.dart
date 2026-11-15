@@ -15,6 +15,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:md3music/widgets/apple_lyrics/layout/lyric_preferences.dart';
 import 'package:md3music/widgets/apple_lyrics/models/lyric_line.dart';
+import 'package:md3music/widgets/apple_lyrics/utils/lyric_credit_filter.dart';
 
 /// 强调辉光状态（逐字符）。
 ///
@@ -272,7 +273,15 @@ class EmphasizeEffect {
   /// 返回 true 表示该行【不应】有任何辉光。
   /// 在 [WordRenderer.tick] 中先调用此方法，若返回 true 则跳过所有 word 的辉光计算。
   ///
-  /// 判定规则：行文本 trim 后为空，或以元数据关键词开头（作词/作曲/编曲 等）。
+  /// 判定规则：
+  /// 1. 行文本 trim 后为空；
+  /// 2. 以元数据关键词开头（作词/作曲/编曲 等，见 [_metadataLineKeywords]）——
+  ///    覆盖「演唱 / 乐团 / 专辑」等无冒号写法；
+  /// 3. **与「隐藏歌词作者信息」同一套规则**（`LyricCreditFilter`，不看开关）：
+  ///    英文名单（`Lyrics by:`）、【…】包装行、版权声明句，以及在线歌词首行的
+  ///    「作者 - 歌名」形态。头部信息行属于元信息，不该被当成歌词打强调辉光；
+  ///    不共用这套规则就得再维护一份关键词表，必然与过滤正则漂移。
+  ///
   /// 结果仅依赖 [LyricLine.text]（行绑定后不变），可安全缓存。
   static bool shouldSkipEmphasizeForLine(LyricLine line) {
     final lineText = line.text.trim();
@@ -280,6 +289,8 @@ class EmphasizeEffect {
     for (final keyword in _metadataLineKeywords) {
       if (lineText.startsWith(keyword)) return true;
     }
+    if (LyricCreditFilter.matchesCreditText(lineText)) return true;
+    if (LyricCreditFilter.matchesArtistTitleForm(lineText)) return true;
     return false;
   }
 
@@ -335,10 +346,15 @@ class EmphasizeEffect {
   }
 
   /// 由 KRC 逐字歌词统计字长中位数（ms）；无逐字或样本不足返回 null。
+  ///
+  /// **排除头部元信息行**：名单/版权/「作者 - 歌名」行的字时长与歌词节奏无关，
+  /// 混进中位数会把阈值带偏（名单行字短且密集，容易把中位数拉低 → 辉光变密）。
+  /// 与行级跳过 [shouldSkipEmphasizeForLine] 共用同一套规则。
   static int? _lyricsMedianMs(List<LyricLine> lines) {
     final List<int> durations = <int>[];
     for (final line in lines) {
       if (!line.hasWordTiming) continue;
+      if (shouldSkipEmphasizeForLine(line)) continue;
       for (final w in line.words) {
         durations.add(w.duration);
       }

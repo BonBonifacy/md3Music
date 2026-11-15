@@ -9,7 +9,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/build_flags.dart';
 import '../../core/layout/page_layout.dart';
-import '../../core/services/folder_picker_service.dart';
+import '../../core/remote/tv_sheet_focus.dart';
 import '../../core/theme/app_dimens.dart';
 import '../../core/utils/app_text_context_menu.dart';
 import '../../core/utils/app_toast.dart';
@@ -21,6 +21,7 @@ import '../../providers/cloud_upload_provider.dart';
 import '../../providers/library_provider.dart';
 import '../../providers/player_provider.dart';
 import '../../providers/song_match_provider.dart';
+import '../../widgets/tv_folder_picker_sheet.dart';
 import '../../services/kugou_api/cloud_song_mapper.dart';
 import '../../services/kugou_api/kugou_api_client.dart';
 import '../../widgets/md3_pull_to_refresh.dart';
@@ -57,6 +58,11 @@ class _CloudMusicPageState extends State<CloudMusicPage> {
   int _lastUploadGeneration = -1;
   late final CloudUploadProvider _uploadProvider;
 
+  /// tv: 上传菜单弹层首项（从音乐库选择）的焦点节点。弹层此前漏接首焦点，
+  /// TV 上打开后遥控无任何落点。
+  final FocusNode _tvUploadMenuFirstNode =
+      FocusNode(debugLabel: 'upload_menu_pick_songs');
+
   @override
   void initState() {
     super.initState();
@@ -71,6 +77,7 @@ class _CloudMusicPageState extends State<CloudMusicPage> {
     _uploadProvider.removeListener(_onUploadQueueChanged);
     _refreshDebounce?.cancel();
     _searchController.dispose();
+    _tvUploadMenuFirstNode.dispose();
     super.dispose();
   }
 
@@ -410,12 +417,15 @@ class _CloudMusicPageState extends State<CloudMusicPage> {
       showDragHandle: true,
       builder: (sheetContext) {
         return SafeArea(
+          child: TvSheetFocus(
+          targetNode: _tvUploadMenuFirstNode,
           child: Consumer<CloudUploadProvider>(
             builder: (context, up, _) {
               return Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   ListTile(
+                    focusNode: _tvUploadMenuFirstNode,
                     leading: const Icon(Icons.library_music_outlined),
                     title: const Text('从音乐库选择'),
                     subtitle: const Text('上传已扫描的本地歌曲，支持多选'),
@@ -445,6 +455,7 @@ class _CloudMusicPageState extends State<CloudMusicPage> {
                 ],
               );
             },
+          ),
           ),
         );
       },
@@ -476,7 +487,9 @@ class _CloudMusicPageState extends State<CloudMusicPage> {
       showToast('需要存储权限才能读取本地文件', long: true);
       return;
     }
-    final dir = await FolderPickerService.pickFolder();
+    // 先试系统 SAF 选择器，打不开（PICKER_UNAVAILABLE，TV 常见）才兜底内置
+    // 目录选择弹层；内置返回的是真实文件系统路径。
+    final dir = await pickFolderTv(context, title: '选择上传文件夹');
     if (!mounted) return;
     if (dir == null) return; // 用户取消
     // 目录选择服务只换算主存储（primary:）路径；SD 卡/OTG 等非主存储

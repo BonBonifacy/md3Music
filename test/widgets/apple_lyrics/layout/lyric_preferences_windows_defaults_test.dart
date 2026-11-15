@@ -196,5 +196,14 @@ void main() {
       LyricPreferences.defaultGlowFixedThresholdMsForCurrentPlatform,
     );
     expect(prefs.glowFixedThresholdMs, 500);
+
+    // 已播 / 未播歌词透明度：alpha 物理上限为 1.0，不套用「默认居中」约定，
+    // 故这里只断言默认值与范围，不调用 expectCentered。
+    expect(prefs.playedOpacity, 1.0);
+    expect(prefs.unplayedOpacity, 0.4);
+    expect(LyricPreferences.minPlayedOpacityForCurrentPlatform, 0.0);
+    expect(LyricPreferences.maxPlayedOpacityForCurrentPlatform, 1.0);
+    expect(LyricPreferences.minUnplayedOpacityForCurrentPlatform, 0.0);
+    expect(LyricPreferences.maxUnplayedOpacityForCurrentPlatform, 1.0);
   }, skip: !Platform.isWindows);
 }

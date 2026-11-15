@@ -133,11 +133,14 @@ android {
         }
     }
 
-    // 2026-09-12：加入 libflacJNI.so（P0-5 flac 扩展）后 native libs 被改为 Stored
-    // （APK 153.6→191.2MB）。显式恢复未压缩打包默认（extractNativeLibs=false，
-    // 直接从 APK 页对齐加载，安装包最小、加载最快）。
+    // 2026-11-12：发版口径改为下载体积优先，恢复压缩打包（useLegacyPackaging=true）。
+    // 背景：2026-09-12 加入 libflacJNI.so 后曾改为 Stored（extractNativeLibs=false，
+    // APK 153.6→191.2MB，安装体积最小、so 直接页对齐加载）；但 v6.3.0 发版包实测
+    // .so 合计 34.9MB 全部不压缩占 APK 89%，GitHub Releases 下载体积过大。
+    // 改回压缩后 APK 约 -14MB，代价是安装时解压 .so、安装占用 +12~16MB。
+    // 详见 docs/plans/2026-11-12-apk-size-optimization-plan.md。
     packaging {
-        jniLibs.useLegacyPackaging = false
+        jniLibs.useLegacyPackaging = true
     }
 
     // 新 API 用在低于 minSdk 的设备 = 运行时 NoSuchMethodError 必崩。issue #130 的教训：

@@ -21,14 +21,15 @@ import 'package:md3music/providers/theme_provider.dart';
 ///    归零收口在 [DraggablePlayerRoute.dispose]。
 /// 2. 进入 / 退出时长只有 [kPlayerExpandDuration] / [kPlayerCollapseDuration] 一个
 ///    来源：`transitionDuration` / `reverseTransitionDuration` 与
-///    `createAnimationController` 都不得再各写一份数字，且退出必须快于进入。
+///    `createAnimationController` 都不得再各写一份数字（退出已放慢至慢于进入，
+///    见用户拍板的 +200ms）。
 void main() {
   test('Windows 点击节奏加快，手机与拖拽保持原时长', () {
     final tap = DraggablePlayerRoute<void>(builder: (_) => const SizedBox());
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     try {
       expect(tap.transitionDuration, const Duration(milliseconds: 220));
-      expect(tap.reverseTransitionDuration, const Duration(milliseconds: 180));
+      expect(tap.reverseTransitionDuration, const Duration(milliseconds: 380));
       final drag = DraggablePlayerRoute<void>(builder: (_) => const SizedBox(),
           dragOriginTop: 700, screenHeight: 800);
       expect(drag.transitionDuration, kPlayerExpandDuration);
@@ -203,19 +204,17 @@ void main() {
     expect(find.byKey(pageKey), findsNothing);
   });
 
-  test('退出快于进入：时长比 0.55~0.75，且路由 getter 与常量同源', () {
-    expect(
-      kPlayerCollapseDuration < kPlayerExpandDuration,
-      isTrue,
-      reason: '动效准则：退出应快于进入',
-    );
+  test('返回放慢（用户拍板 +200ms）：时长比约 1.15，且路由 getter 与常量同源', () {
+    // 旧动效准则是「退出快于进入」；用户实测反馈返回太仓促，拍板收起 +200ms
+    // 放慢，退出可以慢于进入。这里锁住新比例防止无意漂移。
     final double ratio =
         kPlayerCollapseDuration.inMilliseconds /
         kPlayerExpandDuration.inMilliseconds;
+    expect(ratio, 460 / 400);
     expect(
       ratio,
-      inInclusiveRange(0.55, 0.75),
-      reason: '退出/进入时长比应停在约 0.65，偏离过多即观感退化',
+      inInclusiveRange(1.0, 1.3),
+      reason: '收起应停在放慢后的一档（~1.15），再慢就拖沓了',
     );
 
     final DraggablePlayerRoute<void> route = DraggablePlayerRoute<void>(
@@ -365,7 +364,7 @@ void main() {
 
     navigatorKey.currentState!.pop();
     await tester.pump(); // 启动 reverse
-    await tester.pump(const Duration(milliseconds: 130)); // 半程（260ms）
+    await tester.pump(const Duration(milliseconds: 230)); // 半程（460ms，收起已放慢 +200ms）
     expect(
       playerExpansion.value,
       lessThan(0.5),

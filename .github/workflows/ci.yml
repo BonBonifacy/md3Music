@@ -112,7 +112,8 @@ jobs:
         run: |
           flutter build apk --release --flavor lite --split-per-abi --target-platform android-arm64 \
             --android-project-arg=md3EnableImpeller=false \
-            --dart-define=APP_VERSION=ci-${{ github.sha }}
+            --dart-define=APP_VERSION=ci-${{ github.sha }} \
+            --obfuscate --split-debug-info=build/symbols/std-arm64
       - name: Flutter build Apple Music package APK (lite flavor, arm64-v8a)
         run: |
           set -euo pipefail
@@ -123,7 +124,8 @@ jobs:
           flutter build apk --release --flavor lite --split-per-abi --target-platform android-arm64 \
             --android-project-arg=md3ApplicationId=com.apple.android.music \
             --android-project-arg=md3EnableImpeller=true \
-            --dart-define=APP_VERSION=ci-${{ github.sha }}
+            --dart-define=APP_VERSION=ci-${{ github.sha }} \
+            --obfuscate --split-debug-info=build/symbols/am-arm64
           mv "$lite_apk" "$apk_dir/app-apple-music-arm64-v8a-release.apk"
           mv "$lite_backup" "$lite_apk"
 
@@ -134,14 +136,16 @@ jobs:
           flutter build apk --release --flavor tv --split-per-abi --target-platform android-arm64 \
             --android-project-arg=md3EnableImpeller=false \
             --dart-define=MD3_TV=true \
-            --dart-define=APP_VERSION=ci-${{ github.sha }}
+            --dart-define=APP_VERSION=ci-${{ github.sha }} \
+            --obfuscate --split-debug-info=build/symbols/tv-arm64
 
       - name: Flutter build TV APK (tv flavor, armeabi-v7a, Skia)
         run: |
           flutter build apk --release --flavor tv --split-per-abi --target-platform android-arm \
             --android-project-arg=md3EnableImpeller=false \
             --dart-define=MD3_TV=true \
-            --dart-define=APP_VERSION=ci-${{ github.sha }}
+            --dart-define=APP_VERSION=ci-${{ github.sha }} \
+            --obfuscate --split-debug-info=build/symbols/tv-arm32
 
       # ============================================================
       # 产物改名为发布名（ASCII）
@@ -249,27 +253,31 @@ jobs:
           echo "引擎校验通过：lite/tv=Skia, apple-music=Impeller"
 
           # TV 包专项校验（与本地 android.ps1 产物自检同口径）
+          # 开启 --obfuscate 后 libapp.so 内无明文 Dart 符号，正/反向符号校验
+          # 改查 --split-debug-info 产出的符号表（JSON，保留原始函数/类名，
+          # 与 APK 一一对应：std-arm64/am-arm64/tv-* 目录即各次构建的产物）。
           check_tv() {
-            local f="$1" libdir="$2"
+            local f="$1" symbols="$2"
             if unzip -l "$f" | grep -E 'libusb_audio_driver' > /dev/null; then
               echo "::error::TV 包混入 USB 独占驱动: $f"; exit 1
             fi
-            # libapp.so 内检索 Dart AOT 符号（未开 --obfuscate，ASCII 标识符可检索）
-            if unzip -p "$f" "$libdir/libapp.so" | grep -aq DpadFocusable; then
+            # 符号表内检索 Dart AOT 符号（等价于旧 libapp.so 明文检索）
+            if grep -aq DpadFocusable "$symbols"; then
               echo "  TV dpad 焦点符号: OK ($f)"
             else
               echo "::error::TV 包缺少 dpad 焦点符号（MD3_TV 旗标未生效）: $f"; exit 1
             fi
-            if unzip -p "$f" "$libdir/libapp.so" | grep -aq 'UsbExclusiveSection\|_buildLyricPushSubpage'; then
+            if grep -aqE 'UsbExclusiveSection|_buildLyricPushSubpage' "$symbols"; then
               echo "::error::TV 包混入 USB 独占 UI 或歌词推送子页: $f"; exit 1
             fi
           }
-          check_tv "$tv64_apk" "lib/arm64-v8a"
-          check_tv "$tv32_apk" "lib/armeabi-v7a"
+          check_tv "$tv64_apk" "build/symbols/tv-arm64/app.android-arm64.symbols"
+          check_tv "$tv32_apk" "build/symbols/tv-arm32/app.android-arm.symbols"
 
           # 反向：正常包不得含 TV 焦点符号
-          for f in "$std_apk" "$am_apk"; do
-            if unzip -p "$f" lib/arm64-v8a/libapp.so | grep -aq DpadFocusable; then
+          for pair in "$std_apk:build/symbols/std-arm64/app.android-arm64.symbols" "$am_apk:build/symbols/am-arm64/app.android-arm64.symbols"; do
+            f="${pair%%:*}"; symbols="${pair##*:}"
+            if grep -aq DpadFocusable "$symbols"; then
               echo "::error::正常包混入 TV 焦点符号: $f"; exit 1
             fi
           done
@@ -305,6 +313,17 @@ jobs:
           path: build/app/outputs/flutter-apk/MD3Music-${{ env.VER }}-tv-armeabi-v7a.apk
           if-no-files-found: error
           retention-days: 7
+
+      # 混淆符号表 + R8 mapping：崩溃栈还原依据（保留 30 天，发版符号随 main.yml 归档）
+      - name: Upload obfuscation symbols
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: obfuscation-symbols-${{ github.sha }}
+          path: |
+            build/symbols/
+            android/app/build/outputs/mapping/**/mapping.txt
+          if-no-files-found: error
+          retention-days: 30
 
       # 自动创建 Release 并上传 APK（仅 push 到 main/master 时）
       - name: Create CI Release

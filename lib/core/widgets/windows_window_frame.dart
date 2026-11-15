@@ -70,9 +70,10 @@ class _WindowsWindowFrameState extends State<WindowsWindowFrame> {
                                 children: [
                                   // 应用图标（与 exe / 托盘同一吉祥物），替代原先的
                                   // 通用 Material 音符字形。cacheWidth 限制解码尺寸
-                                  // （16dp × 最高 4x DPI），避免整张 1254px 原图解码。
+                                  // （16dp × 最高 4x DPI）；webp 128px 版仅 23KB
+                                  // （原 1254px PNG 297KB 会打进所有平台安装包）。
                                   Image.asset(
-                                    'assets/images/app_icon.png',
+                                    'assets/images/app_icon.webp',
                                     width: 16,
                                     height: 16,
                                     cacheWidth: 64,

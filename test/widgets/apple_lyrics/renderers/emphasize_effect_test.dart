@@ -316,6 +316,63 @@ void main() {
         isTrue,
       );
     });
+
+    // 以下与「隐藏歌词作者信息」（LyricCreditFilter）共用同一套规则：
+    // 头部元信息行不该被当成歌词打强调辉光。开关状态不影响本判定。
+    test('英文名单行 → true（Lyrics by / Composed by）', () {
+      for (final text in <String>[
+        'Lyrics by: John Lennon',
+        'Composed by：某作曲家',
+        'Arranged by: Someone',
+      ]) {
+        expect(
+          EmphasizeEffect.shouldSkipEmphasizeForLine(makeLine(text)),
+          isTrue,
+          reason: '「$text」是名单行，不应参与辉光判定',
+        );
+      }
+    });
+
+    test('【…】包装行 → true', () {
+      expect(
+        EmphasizeEffect.shouldSkipEmphasizeForLine(makeLine('【某某工作室】')),
+        isTrue,
+      );
+    });
+
+    test('版权声明句 → true', () {
+      expect(
+        EmphasizeEffect.shouldSkipEmphasizeForLine(
+          makeLine('未经著作权人许可，不得翻唱或使用'),
+        ),
+        isTrue,
+      );
+    });
+
+    test('在线歌词首行「作者 - 歌名」形态 → true', () {
+      for (final text in <String>['周杰伦 - 晴天', 'A-Lin-给我一个理由忘记']) {
+        expect(
+          EmphasizeEffect.shouldSkipEmphasizeForLine(makeLine(text)),
+          isTrue,
+          reason: '「$text」是头部信息行形态，不应参与辉光判定',
+        );
+      }
+    });
+
+    test('共用规则不误伤正常歌词（冒号歌词/英文歌词/对唱行）', () {
+      for (final text in <String>[
+        '他说：我们走吧',
+        'I love you',
+        '男：你好',
+        '月亮代表我的心',
+      ]) {
+        expect(
+          EmphasizeEffect.shouldSkipEmphasizeForLine(makeLine(text)),
+          isFalse,
+          reason: '「$text」是正常歌词，不得被辉光判定排除',
+        );
+      }
+    });
   });
 
   group('computeState - 字内进度 t', () {
@@ -929,6 +986,28 @@ void main() {
     /// 构造 LRC 行（无逐字时间戳）。
     LyricLine makeLrcLine(String text) =>
         LyricLine(startTime: 0, duration: 1000, text: text);
+
+    test('自适应统计排除头部信息行：名单行字长不进中位数', () {
+      // 20 个字 × 800ms 的歌词行 + 25 个字 × 100ms 的「作词：…」名单行。
+      // 名单行若参与统计，45 个字的中位数落在 100ms → 阈值 100；
+      // 排除后中位数 = 800ms（thresholdFactor 显式 1.0）→ 阈值 800。
+      final creditWords = List<LyricWord>.generate(
+        25,
+        (i) => LyricWord(startTime: i * 100, duration: 100, text: '某'),
+      );
+      final lines = <LyricLine>[
+        makeKrcLine(List.filled(20, 800)),
+        LyricLine(
+          startTime: 0,
+          duration: 2500,
+          text: '作词：某某某某某某',
+          words: creditWords,
+        ),
+      ];
+      expect(adaptive(lines: lines, thresholdFactor: 1.0), 800,
+          reason: '头部信息行属于元信息，不得参与「单位字长」统计'
+              '（否则阈值被拉低、辉光变密）');
+    });
 
     test('songBpm=120 → 阈值 600（一字一拍 500ms × 默认系数 1.2）', () {
       expect(adaptive(songBpm: 120), 600);

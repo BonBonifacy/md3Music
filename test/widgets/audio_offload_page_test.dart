@@ -137,7 +137,7 @@ void main() {
   String? decoderProbeError;
   bool decoderAllSoftware = false;
 
-  setUp(() {
+  setUp(() async {
     SharedPreferences.setMockInitialValues(<String, Object>{});
     probeCalls = 0;
     decoderProbeCalls = 0;
@@ -171,6 +171,8 @@ void main() {
       }
       return null;
     });
+    await AudioOffloadService.instance.setSwipeExitEnabled(false);
+    await AudioOffloadService.instance.refresh();
   });
 
   tearDown(() {

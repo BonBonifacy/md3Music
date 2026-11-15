@@ -582,9 +582,10 @@ class AudioService {
   bool get ignoreAudioFocus => _ignoreAudioFocus;
   void setIgnoreAudioFocus(bool value) {
     _ignoreAudioFocus = value;
-    // native：忽略模式跳过 Media3 内置焦点处理（不 duck/不暂停/不 abandon），
-    // 播放与音量完全保持——否则独占型中断（如 B 站视频 GAIN → 本端 LOSS）
-    // 会被 Media3 强制暂停，忽略开关形同虚设。
+    // native：忽略模式彻底退出焦点体系——Media3 AudioFocusManager 入口拦截，
+    // 不 request / 不持有 / 不 duck / 不暂停 / 不 abandon。此前仅跳过内置响应，
+    // 切歌的 IDLE abandon + play request(GAIN) 照发，把 B 站等其它持有者踢成
+    // LOSS 并暂停（issue #229）。播放与音量完全由 Dart 层保持。
     // ignore: discarded_futures
     _mainPlayer.setIgnoreAudioFocus(value);
     // 同步 forced / keepPlaying 标志（忽略时强制不自动 duck）

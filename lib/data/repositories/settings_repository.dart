@@ -62,6 +62,7 @@ class SettingsRepository {
       'local_music_scan_folders',
       'local_music_excluded_folders',
       'local_music_filter_short_audio',
+      'local_music_scan_only_selected_folders',
     };
     final keys = prefs.getKeys().where((key) {
       // 签到日期是账号数据，不是设置；游客与每个账号的记录均保留。
@@ -2183,6 +2184,29 @@ class SettingsRepository {
   Future<void> setMvAudioFallbackEnabled(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyMvAudioFallback, value);
+  }
+
+  // ===== 划掉后台即退出 =====
+  /// Dart 侧对应 `SwipeExitPolicy`（原生任务移除监听每次现读同一 key，
+  /// 带 `flutter.` 前缀），改完开关下一次划掉后台即生效。
+  static const String _keySwipeExitOnTaskRemoved =
+      'settings_swipe_exit_on_task_removed';
+
+  /// 「划掉后台自动退出」开关，默认 **开启**。
+  ///
+  /// 开启时，所有 Android 手机从最近任务划掉应用 = 停止播放并退出进程
+  /// （原生 stopWithTask 任务移除监听与 onTaskRemoved 双路径执行，不等系统回收）。
+  /// 背景：部分 ROM 会在移除任务时立即杀进程，但 offload 硬解仍可能在
+  /// 进程死亡后继续输出尾音，因此本开关开启时硬解必须让路给普通 PCM 输出。
+  /// 关闭后走现状逻辑（划掉不停播，由系统决定是否回收）。
+  Future<bool> getSwipeExitOnTaskRemoved() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keySwipeExitOnTaskRemoved) ?? true;
+  }
+
+  Future<void> setSwipeExitOnTaskRemoved(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keySwipeExitOnTaskRemoved, value);
   }
 
   // ===== 记忆播放状态 =====

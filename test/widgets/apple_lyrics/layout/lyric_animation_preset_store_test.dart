@@ -20,7 +20,7 @@ void main() {
   tearDown(() => store.resetForTest());
 
   group('保存当前设置', () {
-    test('保存 18 项参数并落盘，重新 load 后恢复', () async {
+    test('保存 20 项参数并落盘，重新 load 后恢复', () async {
       await prefs.setInactiveScale(0.9);
       await prefs.setAlignPosition(0.5);
 
@@ -37,6 +37,45 @@ void main() {
       await store.load();
       expect(store.presets.single.name, '测试预设');
       expect(store.presets.single.values['alignPosition'], 0.5);
+    });
+
+    test('20 项参数含透明度，内置预设自带默认透明度', () async {
+      expect(LyricPreferences.animationValueKeys, hasLength(20));
+      expect(prefs.exportAnimationValues().keys.toSet(),
+          LyricPreferences.animationValueKeys.toSet());
+      expect(prefs.exportAnimationValues()['playedOpacity'], 1.0);
+      expect(prefs.exportAnimationValues()['unplayedOpacity'], 0.4);
+      for (final preset in LyricAnimationPresetStore.builtInPresets) {
+        expect(preset.values['playedOpacity'], 1.0,
+            reason: '${preset.name} 应显式带上默认透明度');
+        expect(preset.values['unplayedOpacity'], 0.4);
+      }
+    });
+
+    test('旧预设缺透明度键时保持当前值，含键时按 setter clamp 生效', () async {
+      await prefs.setPlayedOpacity(0.5);
+      await prefs.setUnplayedOpacity(0.8);
+      expect(
+        await store.importFromJsonText(
+          '{"name":"旧预设","values":{"alignPosition":0.4}}',
+        ),
+        1,
+      );
+      await store.applyPreset('旧预设');
+      expect(prefs.playedOpacity, 0.5,
+          reason: '缺键保持当前值是 applyAnimationValues 既有契约');
+      expect(prefs.unplayedOpacity, 0.8);
+
+      expect(
+        await store.importFromJsonText(
+          '{"name":"新预设","values":{"playedOpacity":2.5,"unplayedOpacity":0.2}}',
+        ),
+        1,
+      );
+      await store.applyPreset('新预设');
+      expect(prefs.playedOpacity,
+          LyricPreferences.maxPlayedOpacityForCurrentPlatform);
+      expect(prefs.unplayedOpacity, 0.2);
     });
 
     test('同名保存覆盖参数而不是新增', () async {
