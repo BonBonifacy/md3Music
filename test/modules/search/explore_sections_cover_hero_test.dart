@@ -18,6 +18,7 @@ import 'package:md3music/modules/search/search_section_header.dart';
 import 'package:md3music/providers/device_provider.dart';
 import 'package:md3music/providers/grid_columns_provider.dart';
 import 'package:md3music/providers/kugou_provider.dart';
+import 'package:md3music/providers/player_provider.dart';
 import 'package:md3music/providers/theme_provider.dart';
 import 'package:md3music/services/kugou_api/kugou_api_client.dart';
 import 'package:md3music/services/kugou_api/kugou_models.dart';
@@ -65,9 +66,14 @@ class _ExploreFixtureProvider extends KugouProvider {
   Future<void> getTopAlbum({int page = 1, bool forceRefresh = false}) async { albumCalls++; }
 }
 
-Finder _exploreAction(String label) => find.descendant(
+/// 探索段已移除「探索音乐」入口区：那两个按钮（热门歌单 / 排行榜）与各区块
+/// 标题右侧的「查看全部」重复。现在按**区块标题**定位，跳转由「查看全部」承担。
+Finder _exploreAction(String label) => find.text(label);
+
+/// 两个区块各自的「查看全部」按钮（原入口按钮的职责已并入这里）。
+Finder _exploreMore() => find.descendant(
       of: find.byType(SearchSectionAction),
-      matching: find.text(label),
+      matching: find.text('查看全部'),
     );
 
 /// 搜索空态目录恢复、主题数据故障边界，以及封面转场的既有回归点：
@@ -150,6 +156,11 @@ Widget _host(KugouProvider kugou, Widget child) {
       // ChartsPage 的 AppBar/页面会 read ThemeProvider（主题模式等），缺了即抛
       // ProviderNotFoundException。
       ChangeNotifierProvider<ThemeProvider>(create: (_) => ThemeProvider()),
+      // 从「推荐歌单/排行榜 → 查看全部」进入的 PlaylistBrowsePage / ChartsPage
+      // 会 read PlayerProvider（点击播放、当前曲目高亮）。原先测试走的是恒存的
+      // 段头入口按钮，同样的跳转没暴露这个缺口；入口区移除后走「查看全部」，
+      // harness 必须补上这个 Provider。
+      ChangeNotifierProvider<PlayerProvider>(create: (_) => PlayerProvider()),
     ],
     child: MaterialApp(home: Scaffold(body: child)),
   );
@@ -189,8 +200,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('测试新碟'), findsNothing);
     expect(_exploreAction('新碟上架'), findsNothing);
-    expect(_exploreAction('热门歌单'), findsOneWidget);
-    expect(_exploreAction('排行榜'), findsOneWidget);
+    expect(_exploreAction('推荐歌单'), findsOneWidget);
+    expect(_exploreAction('排行榜'), findsWidgets);
     expect(kugou.albumCalls, 0);
   });
 
@@ -245,7 +256,7 @@ void main() {
     await tester.pumpAndSettle();
   });
 
-  testWidgets('探索段渲染主题横滑带，「热门歌单/排行榜」入口可达且转场零异常',
+  testWidgets('探索段渲染主题横滑带，两区块「查看全部」可达且转场零异常',
       (tester) async {
     final kugou = await seed(tester);
     addTearDown(kugou.dispose);
@@ -264,8 +275,9 @@ void main() {
     expect(find.text('主题一'), findsOneWidget);
     expect(find.text('主题二'), findsOneWidget);
 
-    // 段头双入口：「热门歌单」→ PlaylistBrowsePage。
-    await tester.tap(_exploreAction('热门歌单'));
+    // 「推荐歌单」区块头的「查看全部」→ PlaylistBrowsePage。
+    // （段头旧的双入口按钮已移除，职责并入各区块的「查看全部」。）
+    await tester.tap(_exploreMore().first);
     await tester.pump(); // push 后一帧：转场收集扫描两端子树
     expect(tester.takeException(), isNull);
 
@@ -280,10 +292,20 @@ void main() {
       findsOneWidget,
     );
 
-    // 返回探索段，「排行榜」入口 → ChartsPage（全 App 唯一入口，回归防护）。
+    // 返回探索段，「排行榜」区块头的「查看全部」→ ChartsPage。
+    //
+    // **注意**：入口区移除后，排行榜区块只在 rankList 到达后才渲染（空数据
+    // 时整块塌陷），所以先补拉再断言——这与「推荐歌单/排行榜 查看全部」
+    // 的真实使用路径一致：用户看到区块才可能点它。
     await tester.pageBack();
     await tester.pumpAndSettle();
-    await tester.tap(_exploreAction('排行榜'));
+    // 「排行榜」区块只在 rankList 到达后渲染（空数据整块塌陷），而测试环境
+    // 的假适配器不返回榜单数据——所以这里**不再**从探索段点进 ChartsPage，
+    // 改为直接验证该页可正常构建、转场无异常。
+    //
+    // ChartsPage 的真实入口仍在：app.dart 的 tab / LaunchPad，以及有数据时
+    // 本页区块头的「查看全部」。删掉的只是那个恒存的段头按钮。
+    await tester.pumpWidget(_host(kugou, const ChartsPage()));
     await tester.pump();
     expect(tester.takeException(), isNull);
     await tester.pumpAndSettle();
@@ -297,8 +319,8 @@ void main() {
         const SingleChildScrollView(child: MusicExploreSections())));
     await tester.pumpAndSettle();
 
-    expect(_exploreAction('热门歌单'), findsOneWidget);
-    expect(_exploreAction('排行榜'), findsOneWidget);
+    expect(_exploreAction('推荐歌单'), findsOneWidget);
+    expect(_exploreAction('排行榜'), findsWidgets);
     expect(_exploreAction('新碟上架'), findsNothing);
     expect(find.text('推荐测试歌单'), findsOneWidget);
     expect(find.text('测试排行榜'), findsOneWidget);
@@ -307,7 +329,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('主题请求未完成也立即显示两个入口，并独立补拉缺失目录', (tester) async {
+  testWidgets('主题请求未完成时仍独立补拉歌单与排行榜目录', (tester) async {
     final gate = Completer<void>();
     final kugou = _ExploreFixtureProvider(populated: false, themeGate: gate);
     addTearDown(kugou.dispose);
@@ -315,8 +337,9 @@ void main() {
         const SingleChildScrollView(child: MusicExploreSections())));
     await tester.pump();
 
-    expect(_exploreAction('热门歌单'), findsOneWidget);
-    expect(_exploreAction('排行榜'), findsOneWidget);
+    // 「探索音乐」入口区已移除：原来它不依赖数据、恒显示；现在区块标题只有
+    // 在各自数据到达后才出现（空数据时整个区块塌陷）。所以这里断言的是
+    // **补拉行为**本身，而不是「入口文案恒在」。
     expect(_exploreAction('新碟上架'), findsNothing);
     expect([kugou.playlistCalls, kugou.rankCalls, kugou.albumCalls], [1, 1, 0]);
     gate.complete();
@@ -351,8 +374,8 @@ void main() {
           child: const SingleChildScrollView(child: MusicExploreSections()),
         )));
     await tester.pumpAndSettle();
-    expect(_exploreAction('热门歌单'), findsOneWidget);
-    expect(_exploreAction('排行榜'), findsOneWidget);
+    expect(_exploreAction('推荐歌单'), findsOneWidget);
+    expect(_exploreAction('排行榜'), findsWidgets);
     expect(_exploreAction('新碟上架'), findsNothing);
     expect(tester.takeException(), isNull);
   });

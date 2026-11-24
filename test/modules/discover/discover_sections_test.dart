@@ -43,15 +43,15 @@ void main() {
     expect(discoverSectionManagerSheetHeight(300), 255);
   });
 
-  test('发现页新碟预览可显示八张，其它紧凑专辑网格仍默认为六张', () {
+  test('发现页新碟预览显示四张，其它紧凑专辑网格仍默认为六张', () {
     const albums = <Album>[];
     final discoverPreview = CompactAlbumGrid(
-      albums: albums, onTap: (_) {}, regionKey: 'discover-preview', maxItems: 8,
+      albums: albums, onTap: (_) {}, regionKey: 'discover-preview', maxItems: 4,
     );
     final defaultGrid = CompactAlbumGrid(
       albums: albums, onTap: (_) {}, regionKey: 'default-preview',
     );
-    expect(discoverPreview.maxItems, 8);
+    expect(discoverPreview.maxItems, 4);
     expect(defaultGrid.maxItems, 6);
   });
 

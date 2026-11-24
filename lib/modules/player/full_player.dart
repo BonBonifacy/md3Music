@@ -2,10 +2,12 @@ import 'dart:async';
 import '../../core/utils/lyric_timeline.dart';
 import 'dart:io' show Platform;
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:dpad/dpad.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart' show kPrimaryButton;
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/services.dart';
 import 'package:m3e_core/m3e_core.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -13,6 +15,7 @@ import 'package:provider/provider.dart';
 import '../download/download_actions.dart';
 
 import '../../core/build_flags.dart';
+import '../../core/fx/waves/wave_reveal.dart';
 import '../../core/platform_capabilities.dart';
 import '../../core/remote/tv_hint_bar.dart';
 import '../../core/remote/tv_menu_key_shortcuts.dart';
@@ -28,6 +31,7 @@ import '../../core/services/media_notification_service.dart';
 import '../../core/services/music_haptics_service.dart';
 import '../../core/services/spectrum_service.dart';
 import '../../core/services/stem_separation_service.dart';
+import '../../core/fx/waves/distortion_wave_style.dart';
 import '../../core/services/windows_fullscreen.dart';
 import '../../core/services/windows_window_controls.dart';
 import '../../core/theme/app_dimens.dart';
@@ -332,6 +336,14 @@ class _FullPlayerState extends State<FullPlayer>
   /// 不会把右键那次的 false 泄漏给下一次手势。
   bool _zenWindowFullscreen = true;
 
+  /// 本趟 Zen 退出时由 [WindowsFullscreen.exitZen] 返回的「进入前全屏快照」。
+  ///
+  /// 只有本趟切过全屏（长按 / F11）才有值；右键进入没调 enterZen，恒为 null。
+  /// 退出波据此判「退全屏后窗口是圆角还是直角」——读 [WindowsFullscreen.active]
+  /// 镜像必然迟一轮 IPC，而波在下一帧 build 就要取圆角。 [_enterZenMode] 每次
+  /// 进入时清空。
+  bool? _zenExitSnapshot;
+
   /// Windows F11 → Zen 的桥回调（注册/注销要同一个引用，故存字段）。
   late final bool Function() _zenToggleHandler = _f11ToggleZen;
 
@@ -543,10 +555,13 @@ class _FullPlayerState extends State<FullPlayer>
     //    导致松手 settleToFull 被吞掉、动画状态错乱。
     route.beginDrag();
     route.controller.value = 1.0;
-    // 完整收起距离：拖拽模式用 MiniPlayer 顶端；tap 模式（点击进入）用全局
-    // 记录的 MiniPlayer 顶端，让播放页沿「展开路径」原路下滑（1:1 跟手）
-    final total = route.dragOriginTop ?? playerDragOriginTop;
-    _topBarDragTotal = total > 0 ? total : MediaQuery.sizeOf(context).height;
+    // 完整收起距离 = 迷你条顶端，且必须是**当前视口**口径：[panelAnchorFor]
+    // 会丢弃「进栈那一刻」的旧视口快照、改用迷你条重登记过的全局锚点。
+    // 转屏 / 分屏 / 小窗 resize 之后仍按旧值算，收起落点就会停在屏中间
+    // （横屏点迷你条进播放页 → 转竖屏 → 下拉收起，实测落在屏高 1/3 处）。
+    final double viewportHeight = MediaQuery.sizeOf(context).height;
+    final double total = route.panelAnchorFor(viewportHeight).top;
+    _topBarDragTotal = total > 0 ? total : viewportHeight;
     route.topBarDragging = true;
     route.topBarDragTotal = _topBarDragTotal;
     _topBarDragDistance = 0.0;
@@ -923,6 +938,8 @@ class _FullPlayerState extends State<FullPlayer>
       duration: const Duration(milliseconds: 400),
       vsync: this,
     );
+    // 长按封面进出 Zen 的波：先把着色器编译好，第一次长按不该退成直接切换。
+    unawaited(WaveReveal.precache());
     _zenAnimation = CurvedAnimation(
       parent: _zenController,
       curve: Curves.easeInOut,
@@ -1468,6 +1485,119 @@ class _FullPlayerState extends State<FullPlayer>
         !_zenMode && _landscapeImmersiveNeeded();
   }
 
+  // ── 长按封面进出 Zen 的那道波 ──
+
+  /// 切换前抓到的一帧。归 [WaveReveal] 所有：被换掉或摘掉时由它释放，
+  /// 这里只持有引用、不 dispose（否则演到一半图就没了）。
+  ui.Image? _zenWaveImage;
+
+  /// 波从哪出发：封面此刻的矩形（长按按下时量；返回键退出时现场重量）。
+  Rect? _zenWaveSource;
+
+  /// 封面包装 Builder 的最新 context：返回键退出 Zen 时用它量封面矩形作波源。
+  /// builder 每次重建都会刷新；封面不在树上时（如 Zen 停在歌词页）保持旧引用，
+  /// 量之前用 `mounted` 判活，量不到就退回波类型默认源。
+  BuildContext? _zenArtworkCtx;
+
+  /// 在状态切换**之前**抓一帧。切完就没得抓了 —— 波要把"切之前那一屏"带走。
+  void _captureZenWave({required bool wave}) {
+    if (!wave || _isDragOverlay || widget.dockMode) return;
+    // 这一层绝不能往上抛：它排在切状态**之前**，抛了 Zen 就再也进不去
+    // （长按 2 秒什么也没发生）。抓不到就只是没有波，切换照常。
+    try {
+      // 整页的 repaint boundary：路由的 modal scope，跟路由过场用的是同一个。
+      final boundary = ModalRoute.of(context)?.subtreeContext?.findRenderObject();
+      if (boundary is! RenderRepaintBoundary || !boundary.hasSize) return;
+      final image = boundary.toImageSync(
+        pixelRatio: MediaQuery.devicePixelRatioOf(context),
+      );
+      setState(() => _zenWaveImage = image);
+    } catch (error, stack) {
+      debugPrint('[ZenWave] capture failed: $error');
+      debugPrintStack(stackTrace: stack, maxFrames: 6);
+    }
+  }
+
+  /// 页面内容的独立 RepaintBoundary 的 key：**常驻**树里保证树形状稳定
+  /// （进出 Zen 不重建页面子树，见 build 里的说明）。
+  final GlobalKey _zenPageBoundary = GlobalKey();
+
+  /// Windows 上按窗口实际圆角换算波的边缘 SDF 半径（见 WindowsFullscreen
+  /// .waveCornerRadius）；其他平台 null 用 screenCenter 预设。
+  DistortionWaveStyle? get _zenWaveStyle {
+    if (!isWindowsDesktop) {
+      // 移动端（含 pad）：波的边缘贴着设备上报的屏幕 R 角。screenCenter 的 62
+      // 是手机屏量级，pad 方角屏 / 小圆角机型沿用会脱节；未上报机型按方角，
+      // 与展开面板终点同口径（DistortionWaveStyle.maxCornerRadiusOf）。
+      final radii = MediaQuery.displayCornerRadiiOf(context);
+      return DistortionWaveStyle.screenCenter.copyWith(
+        cornerRadius: DistortionWaveStyle.maxCornerRadiusOf(radii),
+      );
+    }
+    // 波期间窗口是否处于全屏/最大化形态（= 直角）：
+    // - 进入波：进入后窗口的形态 —— 本趟要切全屏（长按 / F11），或右键进入时
+    //   用户本来就处于 Zen 前全屏（右键不切窗口，形态照用户自己的）；
+    // - 退出波：本趟切过全屏时 = 恢复成进入前的状态（[_zenExitSnapshot]，本地
+    //   真值，不随 IPC 往返迟到）；没切过（右键路径）= 用户自己的窗口态。
+    // 参考 MiniPlayer 展开成播放页那条波的口径（windows_fullscreen.dart）：那些
+    // 波期间窗口形态不变，直接读 active.value 即可；Zen 会切窗口，必须预判。
+    // 注：进入前处于最大化时的直角与「普通窗口圆角」在 Dart 侧不可区分（无最大化
+    // 镜像），该情形沿用圆角口径（与改动前一致）。
+    final bool fullscreenDuringWave = _zenMode
+        ? _zenWindowFullscreen || WindowsFullscreen.active.value
+        : _zenWindowFullscreen
+            ? _zenExitSnapshot == true
+            : WindowsFullscreen.active.value;
+    return WindowsFullscreen.waveStyleForWindow(
+      context,
+      DistortionWaveStyle.screenCenter,
+      windowWillBeFullscreen: fullscreenDuringWave,
+    );
+  }
+
+  /// 波演完了：摘掉它，那一帧由 [WaveReveal] 释放，这里只清引用。
+  void _clearZenWave() {
+    if (!mounted || _zenWaveImage == null) return;
+    setState(() => _zenWaveImage = null);
+  }
+
+  /// [context] 所在控件此刻在屏幕上的矩形；量不到返回 null（波退回类型默认源）。
+  static Rect? _rectOf(BuildContext context) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  /// 为**进入** Zen 准备波源：现场量封面矩形（此刻还是非 Zen 布局，波就从这儿
+  /// 扩散出去）。
+  ///
+  /// 长按路径在指针按下时已经量过；F11 / 右键没有按压上下文，用封面包装 Builder
+  /// 登记的最新 context（[_zenArtworkCtx]）现场量。量不到（封面不在树上，如停在
+  /// 歌词页）就置空，由 WaveStage 退回类型默认源。
+  /// 退出的波源不在这里量 —— 回缩终点是目的屏坐标，见 _exitZenMode 的 post-frame 量取。
+  void _prepareZenWaveSource() {
+    final ctx = _zenArtworkCtx;
+    _zenWaveSource = (ctx != null && ctx.mounted) ? _rectOf(ctx) : null;
+  }
+
+  /// 长按进/退 Zen 的统一收口：**先摘提示、下一帧再切状态**。
+  ///
+  /// 提示环此刻在满进度（手指还按着），直接抓帧会把它冻进波里 —— 退出时表现为
+  /// 「提示环残留到回缩结束」（真机反馈）。这里先把按压缩制器归零（提示层与封面
+  /// 内缩当帧消失），波从下一帧才开始，抓到的帧是干净的。
+  void _toggleZenByLongPress() {
+    _zenPressController.stop();
+    _zenPressController.value = 0;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_zenMode) {
+        _exitZenMode(wave: true);
+      } else {
+        _enterZenMode(wave: true);
+      }
+    });
+  }
+
   /// 进入 Zen 沉浸模式：隐藏顶栏、控件、系统栏，拓宽歌词/封面视图。
   ///
   /// [windowFullscreen]：是否顺带把 Windows 窗口切成无边框全屏。
@@ -1475,13 +1605,21 @@ class _FullPlayerState extends State<FullPlayer>
   /// 「沉浸但保留原窗口大小」，此时绝不能调 `enterZen()`（它立刻 `setFullscreen(true)`）。
   /// 不调也天然安全：退出路径的 `exitZen()` 在快照为 null 时是 no-op，不会误关
   /// 用户自己手动开的 F11 全屏（W2 快照模型）。
-  void _enterZenMode({bool windowFullscreen = true}) {
+  ///
+  /// [wave]：这一段用不用扭曲波。长按封面（进 / 退）、系统返回键退出、F11 与
+  /// 右键封面（进 / 退）给 true —— 长按起于封面控件本身，其余现场量封面矩形作
+  /// 波源；peek 的临时唤出/收回是瞬态显隐，保持原样。
+  void _enterZenMode({bool windowFullscreen = true, bool wave = false}) {
     if (_zenMode) return;
     // 车机模式：面板常驻不会 dispose，而 Zen 会设全局沉浸标志
     // kPlayerZenImmersiveActive；面板一旦进入 Zen 就没有兜底清理点，
     // 会让主界面 _SystemUiUpdater 被永久短路。
     if (widget.dockMode) return;
     _zenWindowFullscreen = windowFullscreen;
+    // 新一趟进入：上一趟的退出快照不再适用（含 peek 回落那次进入），先清掉。
+    _zenExitSnapshot = null;
+    // 必须在切状态之前抓：波要带走的正是"切之前"那一屏。
+    _captureZenWave(wave: wave);
     // 停在控制页时**不**切走：控制页是 pager 的子页，ZenFade 只淡出底部导航条，
     // 进度条/传输行/音量条不会随之消失，切去歌词页反而会打断用户正在用的这页。
     setState(() => _zenMode = true);
@@ -1502,7 +1640,9 @@ class _FullPlayerState extends State<FullPlayer>
   ///
   /// [keepWindowFullscreen]：peek（单击封面唤出 chrome）的临时退出用它 ——
   /// 4 秒后会自动回 Zen，若此时跟着退全屏，窗口会缩小再放大两次。
-  void _exitZenMode({bool keepWindowFullscreen = false}) {
+  ///
+  /// [wave]：见 [_enterZenMode]。
+  void _exitZenMode({bool keepWindowFullscreen = false, bool wave = false}) {
     // 显式退出要终止「唤出 4 秒后自动收回」的倒计时，否则用户刚长按退出、
     // 定时器又把 chrome 收回去。放在 !_zenMode 守卫之前：peek 期间 _zenMode
     // 已经是 false，守卫会直接 return、取消不到。
@@ -1513,14 +1653,41 @@ class _FullPlayerState extends State<FullPlayer>
     _zenChromeDim.value = 1.0;
     // Windows 窗口全屏的恢复同样必须在守卫之前：peek 期间 _zenMode 已是 false，
     // 放守卫后面会让 peek 中途按 F11 退不出全屏。
-    if (!keepWindowFullscreen) WindowsFullscreen.exitZen();
+    if (!keepWindowFullscreen) {
+      // 同帧取回快照：exitZen 内部随即清空，而退出波的 style 在下一帧 build
+      // 就要用它判窗口形态 —— 等 active.value 翻要一轮 IPC，必然迟到。
+      _zenExitSnapshot = WindowsFullscreen.exitZen();
+    }
     if (!_zenMode) return;
+    _captureZenWave(wave: wave);
+    // 退出方向的回缩：源点必须是**回缩完成后**封面所在的矩形（目的屏坐标）。
+    // 触发时刻量到的（[_prepareZenWaveSource] / 指针按下时量的）是 Zen 布局的
+    // 矩形，方向反了不能沿用 —— 先清掉，等新布局落地后现场重量。
+    _zenWaveSource = null;
     setState(() => _zenMode = false);
-    _zenController.reverse();
+    if (wave) {
+      // 带波的退出**跳过 400ms 淡入**，chrome 立即全量出现：波本身就是转场，
+      // 底下再叠一层淡入是冗余的 —— 且覆盖层只在波前后方遮住旧帧，其余部分
+      // 透出的是底下实时的新页面，chrome 不全量就会「按钮最后才出现」（真机踩过）。
+      _zenController.value = 0;
+    } else {
+      _zenController.reverse();
+    }
+    if (wave && _zenWaveImage != null) {
+      // 回缩终点 = 退出后封面所在的矩形：新布局落地后现场量（下一帧，波前
+      // 那时还在屏幕外，起点坐标的迟到无感）。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final ctx = _zenArtworkCtx;
+        _zenWaveSource = (ctx != null && ctx.mounted) ? _rectOf(ctx) : null;
+        if (mounted) setState(() {});
+      });
+    }
     kPlayerZenImmersiveActive.value = false;
     applyImmersiveForOrientation();
     _syncLandscapeImmersiveFlag();
   }
+
 
   /// Windows F11：播放页在场且在最上层时切换 Zen，返回 true 表示消费了本次按键。
   ///
@@ -1534,13 +1701,14 @@ class _FullPlayerState extends State<FullPlayer>
     // peek 期间（chrome 已临时唤出、4s 后自动回 Zen）：F11 视为「彻底退出 Zen」，
     // 同时取消倒计时与压暗因子，否则定时器会在已回 Zen 后再把因子按到 0.2。
     if (_zenPeekTimer != null) {
-      _exitZenMode();
+      _exitZenMode(wave: true);
       return true;
     }
     if (_zenMode) {
-      _exitZenMode();
+      _exitZenMode(wave: true);
     } else {
-      _enterZenMode();
+      _prepareZenWaveSource();
+      _enterZenMode(wave: true);
     }
     return true;
   }
@@ -1557,9 +1725,10 @@ class _FullPlayerState extends State<FullPlayer>
     // 倒计时：此时右键的语义应当是「彻底退出」，与 F11 在 peek 中按键一致。
     // 顺序反过来会让右键变成「再进一次 Zen」，用户按不出退出。
     if (_zenPeekTimer != null || _zenMode) {
-      _exitZenMode();
+      _exitZenMode(wave: true);
     } else {
-      _enterZenMode(windowFullscreen: false);
+      _prepareZenWaveSource();
+      _enterZenMode(windowFullscreen: false, wave: true);
     }
   }
 
@@ -1597,7 +1766,7 @@ class _FullPlayerState extends State<FullPlayer>
   /// 通过 Listener 的 onPointerDown/Move/Up 直接跟踪指针，
   /// 精确实现 2000ms 长按（不依赖系统 500ms 长按识别延迟），
   /// 同时不与 TabBarView 的水平滑动抢手势。
-  void _onArtworkPointerDown(PointerDownEvent event) {
+  void _onArtworkPointerDown(PointerDownEvent event, BuildContext artworkContext) {
     // 只跟踪主键。右键由 _toggleZenBySecondaryClick 负责；这里若也起 2000ms 长按
     // ticker，右键按住 2 秒会再切一次 Zen（进→立即退），按下期间还会误亮提示层。
     // 只看按键位、不看设备类型：触屏/触控板点按的 down 事件 buttons 恒为
@@ -1605,6 +1774,8 @@ class _FullPlayerState extends State<FullPlayer>
     // 加 `kind == mouse` 反而会漏掉触控板。
     if ((event.buttons & kPrimaryButton) == 0) return;
     _zenPressOrigin = event.position;
+    // 顺便量一下封面此刻的矩形：长按满 2 秒进 Zen 时，波就从这儿扩散。
+    _zenWaveSource = _rectOf(artworkContext);
     _zenHintHapticFired = false;
     // 兜底复位：上一次的 tap 可能被竖直拖拽等手势抢走、没走到 onTap
     _zenPressConsumedTap = false;
@@ -1614,13 +1785,7 @@ class _FullPlayerState extends State<FullPlayer>
       _zenPressOrigin = null;
       // 中震：确认长按达到 2000ms，切换 Zen 模式
       AppHaptics.mediumImpact(HapticCategory.gesture);
-      if (_zenMode) {
-        _exitZenMode();
-      } else {
-        _enterZenMode();
-      }
-      // 提示层与封面内缩随 Zen 转场一起回弹淡出
-      _zenPressController.reverse();
+      _toggleZenByLongPress();
     });
   }
 
@@ -1673,30 +1838,41 @@ class _FullPlayerState extends State<FullPlayer>
     // 车机模式禁用长按进 Zen：见 _enterZenMode 的说明。
     // 这一处是主守卫（连长按提示层与按压动效一并去掉）。
     if (_zenLongPressEnabled && !widget.dockMode) {
-      result = Listener(
-        onPointerDown: _onArtworkPointerDown,
-        onPointerMove: _onArtworkPointerMove,
-        onPointerUp: (_) => _cancelArtworkPress(),
-        onPointerCancel: (_) => _cancelArtworkPress(),
-        child: AnimatedBuilder(
-          animation: _zenPressController,
-          child: result,
-          builder: (context, artwork) {
-            final progress = _zenPressController.value;
-            // 按压时封面轻微内缩（1.0 → 0.94），松手回弹
-            final press = Curves.easeOut.transform(progress);
-            return Stack(
-              // Stack 默认 hardEdge 会把子树裁回封面布局盒，而封面投影正是画在
-              // 盒子外侧的那一圈模糊 —— 不关掉裁剪，投影就等于没加。
-              // 提示层是 Positioned.fill（本就等于盒大小），关掉裁剪不影响它。
-              clipBehavior: Clip.none,
-              children: [
-                Transform.scale(scale: 1.0 - 0.06 * press, child: artwork),
-                _buildZenPressHint(progress),
-              ],
-            );
-          },
-        ),
+      // ⚠️ 必须先把当前值捕获到局部量再进闭包：闭包捕获的是变量本身，若直接引用
+      // `result`，builder 首次执行时它已经指向这个 Builder 自己 —— child=自己
+      // 无限套娃，push 播放页即 Stack overflow（表现为"点了迷你条进不去"）。
+      final artwork = result;
+      result = Builder(
+        // 需要一个能"找 RenderObject"的 context 来量封面矩形（见 _rectOf）。
+        // 顺手登记最新 context：返回键退出 Zen 时据此现场量波源（见 PopScope）。
+        builder: (artworkContext) {
+          _zenArtworkCtx = artworkContext;
+          return Listener(
+            onPointerDown: (event) => _onArtworkPointerDown(event, artworkContext),
+            onPointerMove: _onArtworkPointerMove,
+            onPointerUp: (_) => _cancelArtworkPress(),
+            onPointerCancel: (_) => _cancelArtworkPress(),
+            child: AnimatedBuilder(
+              animation: _zenPressController,
+              child: artwork,
+              builder: (context, artwork) {
+                final progress = _zenPressController.value;
+                // 按压时封面轻微内缩（1.0 → 0.94），松手回弹
+                final press = Curves.easeOut.transform(progress);
+                return Stack(
+                  // Stack 默认 hardEdge 会把子树裁回封面布局盒，而封面投影正是画在
+                  // 盒子外侧的那一圈模糊 —— 不关掉裁剪，投影就等于没加。
+                  // 提示层是 Positioned.fill（本就等于盒大小），关掉裁剪不影响它。
+                  clipBehavior: Clip.none,
+                  children: [
+                    Transform.scale(scale: 1.0 - 0.06 * press, child: artwork),
+                    _buildZenPressHint(progress),
+                  ],
+                );
+              },
+            ),
+          );
+        },
       );
     }
     // Windows 鼠标右键：进入 / 退出「不持窗口全屏的 Zen」（见
@@ -2061,8 +2237,8 @@ class _FullPlayerState extends State<FullPlayer>
                   fallbackFilePath: fallbackFilePath,
                   fit: BoxFit.cover,
                   iconSize: iconSize,
-                  backgroundColor: colorScheme.surfaceContainerHighest,
-                  iconColor: colorScheme.onSurfaceVariant,
+                  backgroundColor: colorScheme.primaryContainer,
+                  iconColor: colorScheme.primary,
                 ),
               ),
             ),
@@ -2077,11 +2253,37 @@ class _FullPlayerState extends State<FullPlayer>
     // 转场取证用：整页 build 次数。**期望 0** —— 页面应当作为 `child` 被复用、
     // 只由面板裁剪；一旦转场期间它还在涨，UI 侧的大头就是整页逐帧重建。
     coverMorphCountPageBuild(this);
-    return ZenChromeDim(
+    final page = ZenChromeDim(
       notifier: _zenChromeDim,
       child: Builder(
         builder: (context) => _tvMenuKeyScope(context, _buildPlayer(context)),
       ),
+    );
+    // Zen 切换波：页面内容**常驻**包一层 RepaintBoundary，覆盖层只是 Stack 的
+    // 一个条件子项。
+    //
+    // ⚠️ 树形状必须稳定：若"波激活时包 Stack、结束拆掉"，页面子树（流光背景/
+    // 写真轮播等）会因形状变化被整体卸载重建 —— FlowingBackground 重新挂载后
+    // 调色板从兜底色起步，表现为「进出 Zen 后背景闪一下」「退出后背景是兜底色」
+    // （真机反馈，开不开动态流光都会闪，因为写真/频谱背景同样被重建）。
+    // 覆盖层透明处直接透出底下实时的新页面（歌词/流光全程不冻结）。
+    final waveImage = _zenWaveImage;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        RepaintBoundary(key: _zenPageBoundary, child: page),
+        if (waveImage != null)
+          WaveReveal(
+            key: ValueKey<ui.Image>(waveImage),
+            image: waveImage,
+            source: _zenWaveSource,
+            style: _zenWaveStyle,
+            // 进（_zenMode=true）从封面扩散出去；退（false）反向回缩到封面
+            // —— 源点是退出后封面所在的矩形（见 _exitZenMode 的 post-frame 量取）。
+            reverse: !_zenMode,
+            onDone: _clearZenWave,
+          ),
+      ],
     );
   }
 
@@ -2158,7 +2360,9 @@ class _FullPlayerState extends State<FullPlayer>
           // 车机面板常驻，返回键不得让它消失
           if (widget.dockMode) return;
           if (_zenMode) {
-            _exitZenMode();
+            // 返回键退出 Zen 也走波；回缩终点（目的屏里封面的矩形）由
+            // 回缩终点在新布局落地后量（见 _exitZenMode 的 post-frame）。
+            _exitZenMode(wave: true);
             return;
           }
           // 播放列表编辑模式优先：返回键先退出编辑，而不是收起播放页
@@ -3507,8 +3711,10 @@ class _FullPlayerState extends State<FullPlayer>
       fallbackFilePath: song.localPath,
       fit: BoxFit.cover,
       iconSize: iconSize,
-      backgroundColor: colorScheme.surfaceContainerHighest,
-      iconColor: colorScheme.onSurfaceVariant,
+      // 无封面占位跟随莫奈/封面取色（与本地音乐列表同口径）：横滑邻居页
+      // 滑到当前页后就是主封面，退场层才用中性灰（见 crossfade 旧层）。
+      backgroundColor: colorScheme.primaryContainer,
+      iconColor: colorScheme.primary,
     );
   }
 

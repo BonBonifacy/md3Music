@@ -1,4 +1,5 @@
 import 'package:material_ui/material_ui.dart';
+import '../../widgets/app_empty_state.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/layout/adaptive_navigator.dart';
@@ -82,14 +83,7 @@ class _FoldersPageState extends State<FoldersPage> {
   Widget build(BuildContext context) {
     final folders = widget.folders;
     if (folders.isEmpty) {
-      return Center(
-        child: Text(
-          '暂无文件夹',
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
-        ),
-      );
+      return const AppEmptyState.text(title: '暂无文件夹');
     }
 
     return Column(

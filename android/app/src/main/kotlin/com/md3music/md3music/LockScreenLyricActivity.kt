@@ -181,8 +181,17 @@ class LockScreenLyricActivity : Activity(), LockScreenLyricView.Listener {
         /// 熄屏路径不校验——熄屏后系统必定进入 keyguard，且个别 ROM 在熄屏瞬间
         /// 上报的 keyguard 状态有延迟。
         fun start(context: Context, requireLocked: Boolean = false) {
-            android.util.Log.i("LockScreenLyric", "start() called, running=${runningActivity != null}")
-            if (runningActivity != null) return
+            val existing = runningActivity
+            // 单飞闸门：销毁流程中的旧实例不再挡新启动（finish 已发起、onDestroy 未到
+            // 之间 runningActivity 仍是旧引用，直接用 isFinishing 排除），杜绝叠建；
+            // 广播与 UI 多线程同时请求时也以这条为唯一判据。
+            if (existing != null && !existing.isFinishing) {
+                android.util.Log.i("LockScreenLyric", "start() called, running=true")
+                return
+            }
+            android.util.Log.i(
+                "LockScreenLyric", "start() called, running=${existing != null} (finishing=${existing?.isFinishing == true})"
+            )
             if (requireLocked && !isKeyguardLocked(context)) {
                 android.util.Log.i("LockScreenLyric", "start() skipped: keyguard not locked")
                 return
@@ -209,6 +218,10 @@ class LockScreenLyricActivity : Activity(), LockScreenLyricView.Listener {
         } catch (_: Exception) {
             false
         }
+
+        /// [isKeyguardLocked] 的对外口径：供锁屏启动广播的崩溃兜底日志记录状态。
+        fun isKeyguardLockedPublic(context: Context): Boolean =
+            isKeyguardLocked(context)
 
         fun dismiss() {
             android.util.Log.i("LockScreenLyric", "dismiss() called")
@@ -316,6 +329,9 @@ class LockScreenLyricActivity : Activity(), LockScreenLyricView.Listener {
         super.onStop()
         android.util.Log.i("LockScreenLyric", "onStop (stay alive)")
         lyricView.onScreenHidden()
+        // 解锁/收层后系统会顺带移除 hidden 主任务（见 SwipeExitPolicy 文档），
+        // 在此登记窗口，防止该次任务移除被误判为「用户划掉后台」而自杀式退出。
+        SwipeExitPolicy.markLockLayerEnded()
     }
 
     override fun onDestroy() {

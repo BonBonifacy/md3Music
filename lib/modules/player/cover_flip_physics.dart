@@ -15,7 +15,7 @@
 
 import 'dart:math' as math;
 
-import 'package:flutter/animation.dart' show Curves;
+import 'package:flutter/animation.dart' show Cubic, Curves;
 import 'package:flutter/widgets.dart' show Matrix4;
 
 /// 半程角：90°（侧立）。
@@ -98,9 +98,23 @@ double coverFlipNewBlurProgress(double t) => Curves.easeOut.transform(
 ///
 /// 末段冲过就位角再回弹——「翻转过头的超出感」；因此返回值可以 >1
 /// （约 1.1），角度随之短暂越过 0（见 [coverFlipNewAngle]）。
-double coverFlipNewRotationProgress(double t) => Curves.easeOutBack.transform(
-  ((t - kCoverFlipSwap) / (1.0 - kCoverFlipSwap)).clamp(0.0, 1.0),
-);
+///
+/// [overshoot] 只由手势提交路径按甩动强度分档传入；默认 1.0 直接复用
+/// [Curves.easeOutBack]，自动过渡路径与既有物理测试的行为一字不变。
+///
+/// 非默认值**不能**换成经典 back 解析式（`1 + c3·p³ + c1·p²`，c1=1.70158）：
+/// Flutter 的 `easeOutBack` 实际是三次贝塞尔
+/// `Cubic(0.175, 0.885, 0.32, 1.275)`（见 `flutter/src/animation/curves.dart`），
+/// 与解析式形状不同；若 1.0 档走贝塞尔、其它档走解析式，切换档位时曲线形状
+/// 会跳变（同一 t 的角度突变，实测 x=0.05 处差 0.031）。
+/// 过冲由 `y2 > 1` 决定，所以只缩放它偏离 1 的部分：overshoot=1.0 与
+/// [Curves.easeOutBack] 逐点等价，0.65/1.35 连续地变克制 / 变夸张
+/// （峰值单调、端点仍为 0 与 1）。
+double coverFlipNewRotationProgress(double t, {double overshoot = 1.0}) {
+  final x = ((t - kCoverFlipSwap) / (1.0 - kCoverFlipSwap)).clamp(0.0, 1.0);
+  if (overshoot == 1.0) return Curves.easeOutBack.transform(x);
+  return Cubic(0.175, 0.885, 0.32, 1.0 + 0.275 * overshoot).transform(x);
+}
 
 /// 旧封面转角（弧度）：0 → +90°。
 ///
@@ -119,8 +133,12 @@ double coverFlipOldAngle(double t) =>
 /// 「翻到一半又翻回来」（真机反馈：像根本没翻过），并且新层透视与旧层同侧
 /// （本该是左侧大、右侧小，实测成了左侧小、右侧大）。
 /// 负半程入场 = 翻过 90° 后看到卡片背面，透视天然镜像。
-double coverFlipNewAngle(double t) =>
-    -kCoverFlipHalfTurn * (1.0 - coverFlipNewRotationProgress(t));
+///
+/// [overshoot] 透传给 [coverFlipNewRotationProgress]；默认 1.0 时与改造前
+/// 逐点相同，端点（t=交接点 / t=1）不受过冲系数影响。
+double coverFlipNewAngle(double t, {double overshoot = 1.0}) =>
+    -kCoverFlipHalfTurn *
+    (1.0 - coverFlipNewRotationProgress(t, overshoot: overshoot));
 
 /// 旧封面模糊 sigma：前半程 0 → 峰值，交接后归零（窗口外不过滤镜）。
 ///

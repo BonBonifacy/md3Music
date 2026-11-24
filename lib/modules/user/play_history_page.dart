@@ -1,4 +1,5 @@
 import '../../core/layout/page_layout.dart';
+import '../../core/theme/app_dimens.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:m3e_core/m3e_core.dart';
 import '../../widgets/md3_pull_to_refresh.dart';
@@ -10,6 +11,7 @@ import '../../providers/kugou_provider.dart';
 import '../../providers/listen_stats_provider.dart';
 import '../../providers/player_provider.dart';
 import '../../services/kugou_api/kugou_models.dart';
+import '../../widgets/app_empty_state.dart';
 import '../../widgets/song_list_item.dart';
 import '../player/secondary_mini_player.dart';
 
@@ -185,7 +187,12 @@ class _PlayHistoryPageState extends State<PlayHistoryPage> {
                 onPressed: _exitEditMode,
               )
             : null,
-        title: Text(editingLocal ? '已选 ${_selectedIds.length} 首' : '播放历史'),
+        // 显式取 titleLarge：裸 Text 会吃 appBarTheme 的 22/w400，
+        // 比其它页标题（titleLarge 22/w600）细一档。
+        title: Text(
+          editingLocal ? '已选 ${_selectedIds.length} 首' : '播放历史',
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(48),
           child: Padding(
@@ -350,7 +357,8 @@ class _PlayHistoryPageState extends State<PlayHistoryPage> {
         context.read<PlayerProvider>().playOnlinePlaylist(songs, index);
       },
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        // SongListItem 自带 10dp，补 6 凑成页面 16dp（原 8 是 18，比别处深 2）
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: AppSpacing.xs),
         child: Row(
           children: [
             Expanded(
@@ -381,65 +389,17 @@ class _PlayHistoryPageState extends State<PlayHistoryPage> {
     );
   }
 
-  Widget _buildCloudNotLoggedIn() {
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.cloud_off_outlined,
-            size: 64,
-            color: cs.onSurfaceVariant.withValues(alpha: 0.4),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            '登录后可查看云端听歌历史',
-            style: Theme.of(
-              context,
-            ).textTheme.bodyLarge?.copyWith(color: cs.onSurfaceVariant),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '播放记录将自动同步，其他设备也可查看',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: cs.onSurfaceVariant.withValues(alpha: 0.7),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildCloudNotLoggedIn() => const AppEmptyState(
+        icon: Icons.cloud_off_outlined,
+        title: '登录后可查看云端听歌历史',
+        subtitle: '播放记录将自动同步，其他设备也可查看',
+      );
 
-  Widget _buildCloudEmpty() {
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.history,
-            size: 64,
-            color: cs.onSurfaceVariant.withValues(alpha: 0.4),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            '云端暂无听歌记录',
-            style: Theme.of(
-              context,
-            ).textTheme.bodyLarge?.copyWith(color: cs.onSurfaceVariant),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '播放在线歌曲后会自动同步到云端',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: cs.onSurfaceVariant.withValues(alpha: 0.7),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildCloudEmpty() => const AppEmptyState(
+        icon: Icons.history,
+        title: '云端暂无听歌记录',
+        subtitle: '播放在线歌曲后会自动同步到云端',
+      );
 
   // ---- 本地歌曲 Tab ----
 
@@ -497,61 +457,20 @@ class _PlayHistoryPageState extends State<PlayHistoryPage> {
     );
   }
 
-  Widget _buildLocalEmpty() {
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.library_music_outlined,
-            size: 64,
-            color: cs.onSurfaceVariant.withValues(alpha: 0.4),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            '暂无本地歌曲播放记录',
-            style: Theme.of(
-              context,
-            ).textTheme.bodyLarge?.copyWith(color: cs.onSurfaceVariant),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '在线歌曲的播放记录请查看「云端历史」',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: cs.onSurfaceVariant.withValues(alpha: 0.7),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildLocalEmpty() => const AppEmptyState(
+        icon: Icons.library_music_outlined,
+        title: '暂无本地歌曲播放记录',
+        subtitle: '在线歌曲的播放记录请查看「云端历史」',
+      );
 
   Widget _buildErrorRetry({
     required String message,
     required VoidCallback onRetry,
   }) {
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.error_outline,
-            size: 64,
-            color: cs.onSurfaceVariant.withValues(alpha: 0.4),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            message,
-            style: Theme.of(
-              context,
-            ).textTheme.bodyLarge?.copyWith(color: cs.onSurfaceVariant),
-          ),
-          const SizedBox(height: 12),
-          FilledButton.tonal(onPressed: onRetry, child: const Text('重试')),
-        ],
-      ),
+    return AppEmptyState(
+      icon: Icons.error_outline,
+      title: message,
+      action: FilledButton.tonal(onPressed: onRetry, child: const Text('重试')),
     );
   }
 

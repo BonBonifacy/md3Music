@@ -50,6 +50,23 @@ class PlayerPanelSignal {
   /// 这段形变的起点。
   static double anchorRadius = 0.0;
 
+  /// 锚点的**发布者身份令牌**（由迷你条 State 持有一个私有 `Object()`）。
+  ///
+  /// 只用于「视口变化后谁来重测」：多形态同屏（壳层常驻条 + 二级悬浮胶囊）
+  /// 时两个 State 都会在转屏后拿到刷新机会，没有令牌就会各写一次、后写者赢，
+  /// 收起落点可能落到用户根本没点的那一根上。null = 未登记。
+  static Object? anchorOwner;
+
+  /// 登记锚点时的**视口高度**（逻辑像素）。
+  ///
+  /// 锚点是「量到的绝对 Y」：转屏 / 分屏 / 小窗 resize 之后旧值不再对应当前
+  /// 布局（横屏的迷你条顶端 323 放进竖屏 873 高的屏里就是屏幕中间的一块），
+  /// 收起动画的落点会落到半空。消费端据此判定锚点是否过期，发布方（迷你条）
+  /// 在视口变化后重测并重新登记。
+  ///
+  /// `<= 0` = 未记录（旧调用点 / 测试裸挂），一律按「仍然有效」处理。
+  static double anchorViewportHeight = 0.0;
+
   /// 锚点未登记时的迷你条兜底高度（dp）。
   ///
   /// **取值来源**：桌面外壳 `NowPlayingBar` 的固定高（`_kHeight = 72.0`，
@@ -60,6 +77,21 @@ class PlayerPanelSignal {
   /// [BottomChromeDimens.discReservedBottom]（见 `panelAnchorFor` 与
   /// [resolveBottomChromeSinkOffset]）。
   static const double fallbackBarHeight = 72.0;
+
+  /// 已登记的锚点是否属于 [screenHeight] 这个视口。
+  ///
+  /// 锚点是**量到的绝对 Y**：转屏 / 分屏 / 小窗 resize 之后旧值不再对应当前布局
+  /// （横屏「迷你条顶端 323」放进竖屏 873 高的屏里就是屏幕中间的一块），任何
+  /// 消费方直接拿它推收起落点或底栏下沉量都会落到半空。
+  ///
+  /// 未记录登记时的视口高度（`<= 0`，旧调用点 / 测试裸挂）一律按**有效**处理，
+  /// 与引入该字段之前逐值一致。
+  static bool anchorIsCurrent(double screenHeight) {
+    if (!screenHeight.isFinite || screenHeight <= 0) return true;
+    final double published = anchorViewportHeight;
+    if (!published.isFinite || published <= 0) return true;
+    return (published - screenHeight).abs() < 0.5;
+  }
 
   /// 登记锚点（顶端 + 底端 + 横向范围 + 外轮廓圆角，**成组写**）。
   ///
@@ -72,12 +104,16 @@ class PlayerPanelSignal {
     double left = 0.0,
     double width = 0.0,
     double radius = 0.0,
+    Object? owner,
+    double viewportHeight = 0.0,
   }) {
     anchorTop = top;
     anchorBottom = bottom;
     anchorLeft = left;
     anchorWidth = width;
     anchorRadius = radius;
+    anchorOwner = owner;
+    anchorViewportHeight = viewportHeight;
   }
 }
 
@@ -111,11 +147,18 @@ double resolveBottomChromeSinkOffset({
   // **胶囊几何**的贴底条（底端 = 屏底、高 = discReservedBottom），保证底栏位移
   // 与面板真实几何一致。**不再**用桌面播放栏高（旧 72）冒充——移动端布局下
   // 根本没有那条 bar，取值只会在两处口径间漂移。
-  final double top = (anchorTop > 0 && anchorTop < screenHeight)
-      ? anchorTop
+  // 旧视口的登记值不可用（转屏 / 分屏 / 小窗 resize，见
+  // [PlayerPanelSignal.anchorIsCurrent]）：与「未登记」同一条兜底链 —— 若拿
+  // 旧值算，底栏会在面板落到半空时就被推到底，露出一条空带。
+  final bool anchorCurrent = PlayerPanelSignal.anchorIsCurrent(screenHeight);
+  final double anchorTopNow = anchorCurrent ? anchorTop : 0.0;
+  final double anchorBottomNow = anchorCurrent ? anchorBottom : 0.0;
+  final double top = (anchorTopNow > 0 && anchorTopNow < screenHeight)
+      ? anchorTopNow
       : math.max(0.0, screenHeight - fallbackBarHeight);
-  final double bottom =
-      (anchorBottom - top) > 0 ? anchorBottom : top + fallbackBarHeight;
+  final double bottom = (anchorBottomNow - top) > 0
+      ? anchorBottomNow
+      : top + fallbackBarHeight;
   final double panelBottom = math.min(
     screenHeight,
     bottom + (screenHeight - bottom) * p,

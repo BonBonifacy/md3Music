@@ -162,27 +162,52 @@ bool usesLargeScreenContentLayout(BuildContext context) {
 }
 
 /// 大屏按局部可用宽度扩展到 92%，手机保持原限宽；不改文字或全局缩放。
+///
+/// [absoluteMax] 是一个**中性能力**：传了就封顶，不传（默认 null）保持
+/// 历史行为，既有调用点完全不受影响。
+///
+/// **注意：目前没有任何页面在使用它，这是有意的。** 曾试过给「列表型」页面
+/// （我的、设置、收藏）单独封顶 960，结果是：
+/// 1) 内容被"挤在中间"——外层 tab 壳层已按 92% 留过白，内层再收窄会让
+///    内容区与 AppBar 标题、TabBar 起止位置全部错位；
+/// 2) 只有部分页面收窄、其它页面仍是 92%，跨页切换时宽度突变，
+///    比统一宽更不统一。
+///
+/// 若日后要用，必须**连同 AppBar / TabBar 一起收窄**（用同一个
+/// [resolveWidth] 算宽度），且全站同时切换，不能只改 body。
 class ContentWidth extends StatelessWidget {
   const ContentWidth({
     super.key,
     required this.child,
     this.maxWidth = AppLayout.maxContentWidth,
+    this.absoluteMax,
   });
+
 
   final Widget child;
   /// 手机原有宽度上限，也是大屏开始扩展的基准，保留调用方的窄面板配置。
   final double maxWidth;
 
+  /// 绝对宽度上限（null = 不封顶，保持历史行为）。
+  final double? absoluteMax;
+
   /// 同一面板嵌套页面只留一次边距，避免 85% 逐层相乘。
   static double resolveWidth(BuildContext context, double width, {
     double maxWidth = AppLayout.maxContentWidth,
+    double? absoluteMax,
   }) {
     final adaptive = usesLargeScreenContentLayout(context);
+    double w;
     if (adaptive && width.isFinite &&
         context.dependOnInheritedWidgetOfExactType<_ContentWidthScope>() != null) {
-      return width;
+      w = width;
+    } else {
+      w = AppLayout.contentWidthFor(width, compactWidth: maxWidth, adaptive: adaptive);
     }
-    return AppLayout.contentWidthFor(width, compactWidth: maxWidth, adaptive: adaptive);
+    // 绝对上限在"已缩窄判定"之后仍生效：嵌套页面拿到外层宽度后，
+    // 不该因为外层恰好很宽就放弃自己的可读上限。
+    if (absoluteMax != null && w > absoluteMax) w = absoluteMax;
+    return w;
   }
 
   @override
@@ -191,7 +216,8 @@ class ContentWidth extends StatelessWidget {
     return LayoutBuilder(builder: (context, constraints) => Align(
       alignment: Alignment.topCenter,
       child: SizedBox(
-        width: resolveWidth(context, constraints.maxWidth, maxWidth: maxWidth),
+        width: resolveWidth(context, constraints.maxWidth,
+            maxWidth: maxWidth, absoluteMax: absoluteMax),
         child: adaptive ? _ContentWidthScope(child: child) : child,
       ),
     ));

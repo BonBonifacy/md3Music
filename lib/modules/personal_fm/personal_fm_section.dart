@@ -1,5 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
+
+import '../../core/theme/app_dimens.dart';
 import 'package:m3e_core/m3e_core.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -579,6 +581,55 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
     List<KugouSongDetail> nextTracks,
     bool isPlaying,
   ) {
+    // 空态走独立分支：原实现复用正常态布局、只替换文案，于是留下一个
+    // 112dp 的封面空位 + 横跨整行的单行小字——最大容器配最小字，且
+    // 宽屏下右栏被 Spacer 推到边缘，中间一大片真空。空态给紧凑横条：
+    // 图标 + 文案 + 主按钮，高度约 64，与相邻区块的密度匹配。
+    if (currentTrack == null) {
+      return Row(
+        children: [
+          Icon(
+            Icons.radio,
+            size: 32,
+            color: cs.onSecondaryContainer.withValues(alpha: 0.7),
+          ),
+          const Gap(AppSpacing.md),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '点播放，开启你的电台',
+                  style: textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: cs.onSurface,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const Gap(AppSpacing.xxs),
+                Text(
+                  '根据你的口味持续推荐',
+                  style: textTheme.bodySmall?.copyWith(
+                    color: cs.onSurfaceVariant,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const Gap(AppSpacing.md),
+          _buildPlayButton(cs, currentTrack, isPlaying),
+          const Gap(AppSpacing.sm),
+          // 档位按钮在空态下仍然要有：它是「换一个电台」的入口，
+          // 空态时恰恰最需要它（测试 personal_fm_section_test.dart:750
+          // 也断言了该 tooltip 必须在场）。
+          _buildStationButton(cs),
+        ],
+      );
+    }
     return Stack(
       children: [
         Row(
@@ -599,7 +650,7 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Text(
-                              currentTrack?.songName ?? '点播放，开启你的电台',
+                              currentTrack.songName,
                               style: textTheme.titleSmall?.copyWith(
                                 fontWeight: FontWeight.w600,
                                 color: cs.onSurface,
@@ -607,11 +658,10 @@ class _PersonalFmSectionState extends State<PersonalFmSection> {
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                             ),
-                            if (currentTrack?.artistName?.isNotEmpty ??
-                                false) ...[
+                            if (currentTrack.artistName?.isNotEmpty ?? false) ...[
                               const SizedBox(height: 3),
                               Text(
-                                currentTrack!.artistName!,
+                              currentTrack.artistName!,
                                 style: textTheme.bodySmall?.copyWith(
                                   color: cs.onSurfaceVariant,
                                 ),

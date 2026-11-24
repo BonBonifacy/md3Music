@@ -19,6 +19,7 @@ import '../../providers/kugou_provider.dart';
 import '../../services/kugou_api/kugou_models.dart';
 import '../../widgets/scroll_aware_app_bar.dart';
 import '../login/login_page.dart';
+import 'kugou_account_expired_dialog.dart';
 import '../settings/settings_page.dart';
 import 'cloud_music_page.dart';
 import 'listen_ranking_page.dart';
@@ -192,6 +193,9 @@ class _UserCenterPageState extends State<UserCenterPage> {
                 _buildActionGrid(cs),
                 const SliverToBoxAdapter(child: Gap(AppSpacing.lg)),
                 _buildVipCard(cs, tt, kugou),
+
+                // 登录设备管理 / 黑名单管理 / 听歌偏好只保留在「账号管理」
+                // 底部面板内（点用户卡片其余区域打开），主页不再重复展示。
                 // 80 之上叠加系统手势条（小横条）高度，避免末项被压住
                 SliverToBoxAdapter(
                   child: SizedBox(
@@ -325,11 +329,14 @@ class _UserCenterPageState extends State<UserCenterPage> {
               color: cs.primaryContainer,
               clipBehavior: Clip.antiAlias,
               // 对角加大圆角：左上让位圆形头像，右下承接昵称块，四角不等而对角自洽
+              // 四角收敛到 AppRadius 刻度：原来 32/20/20/32 两个值都超出刻度
+              // （最大 28）。对角不对称的意图保留（左上让位头像、右下承接昵称），
+              // 改用 xl(28) / lg(16) 两档。
               borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(32),
-                topRight: Radius.circular(20),
-                bottomLeft: Radius.circular(20),
-                bottomRight: Radius.circular(32),
+                topLeft: Radius.circular(AppRadius.xl),
+                topRight: Radius.circular(AppRadius.lg),
+                bottomLeft: Radius.circular(AppRadius.lg),
+                bottomRight: Radius.circular(AppRadius.xl),
               ),
               child: Stack(
                 children: [
@@ -542,15 +549,15 @@ class _UserCenterPageState extends State<UserCenterPage> {
                 color: cs.onPrimaryContainer.withValues(alpha: 0.55),
               ),
             ),
-            const SizedBox(width: 3),
+            const Gap(AppSpacing.xs),
             Text(
               '$gradeNum',
-              style: tt.headlineMedium?.copyWith(
+              style: tt.titleLarge?.copyWith(
                 fontWeight: FontWeight.w800,
                 color: cs.onPrimaryContainer,
               ),
             ),
-            const SizedBox(width: 10),
+            const Gap(AppSpacing.md),
             Flexible(
               child: Text(
                 _formatGradeSeconds(sec),
@@ -762,7 +769,8 @@ class _UserCenterPageState extends State<UserCenterPage> {
     }
 
     final tile = ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+      // 与上方会员卡的 16dp 左缘对齐（原来 xs=4，比卡片更靠左，视觉上参差）
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
       leading: Icon(Icons.devices_other, color: cs.primary),
       title: Text(
         '登录设备管理',
@@ -772,7 +780,6 @@ class _UserCenterPageState extends State<UserCenterPage> {
         '查看并下线当前账号的登录设备',
         style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
       ),
-      trailing: Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
       onTap: open,
     );
 
@@ -801,7 +808,8 @@ class _UserCenterPageState extends State<UserCenterPage> {
     }
 
     final tile = ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+      // 与上方会员卡的 16dp 左缘对齐（原来 xs=4，比卡片更靠左，视觉上参差）
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
       leading: Icon(Icons.block_outlined, color: cs.primary),
       title: Text(
         '黑名单管理',
@@ -811,7 +819,6 @@ class _UserCenterPageState extends State<UserCenterPage> {
         '管理推荐中不想看到的歌曲和歌手',
         style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
       ),
-      trailing: Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
       onTap: open,
     );
 
@@ -838,7 +845,8 @@ class _UserCenterPageState extends State<UserCenterPage> {
     }
 
     final tile = ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+      // 与上方会员卡的 16dp 左缘对齐（原来 xs=4，比卡片更靠左，视觉上参差）
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
       leading: Icon(Icons.tune, color: cs.primary),
       title: Text(
         '听歌偏好',
@@ -848,7 +856,6 @@ class _UserCenterPageState extends State<UserCenterPage> {
         '设置性别、年龄、语言与风格，优化每日推荐',
         style: tt.bodySmall?.copyWith(color: cs.onSurfaceVariant),
       ),
-      trailing: Icon(Icons.chevron_right, color: cs.onSurfaceVariant),
       onTap: open,
     );
 
@@ -876,7 +883,8 @@ class _UserCenterPageState extends State<UserCenterPage> {
         ? account.nickname!
         : '用户 ${account.userid}';
     return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.xs),
+      // 与上方会员卡的 16dp 左缘对齐（原来 xs=4，比卡片更靠左，视觉上参差）
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
       leading: _accountAvatar(account, cs),
       title: Row(
         children: [
@@ -1042,47 +1050,13 @@ class _UserCenterPageState extends State<UserCenterPage> {
   }
 
   /// 账号登录态已过期：提示并引导重新登录 / 删除该账号。
+  /// 弹窗实现已抽到 [showExpiredAccountDialog]，后台定时检查也复用同一处。
   Future<void> _handleExpiredAccount(
     BuildContext context,
     KugouAccount account,
     KugouProvider kugou,
   ) async {
-    if (!context.mounted) return;
-    final navigator = Navigator.of(context, rootNavigator: true);
-    final action = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('登录已过期'),
-        content: Text(
-          '「${account.nickname ?? account.userid}」的登录状态已过期，'
-          '需重新登录后才能使用该账号。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, 'remove'),
-            child: const Text('删除该账号'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, 'relogin'),
-            child: const Text('重新登录'),
-          ),
-        ],
-      ),
-    );
-    if (!context.mounted) return;
-
-    switch (action) {
-      case 'relogin':
-        // 重新登录：登录成功后 setLoginCookies 会清除该账号的过期标记
-        await navigator.push(
-          MaterialPageRoute(builder: (_) => const LoginPage()),
-        );
-      case 'remove':
-        await kugou.removeAccount(account.userid);
-        if (!context.mounted) return;
-        context.read<FavoritesProvider>().loadFavorites();
-        showToast('已删除过期账号', long: true);
-    }
+    return showExpiredAccountDialog(context, account, kugou);
   }
 
   /// 删除账号（确认 → 删除 → 若为当前账号则重载收藏 → 关闭面板）
@@ -1152,14 +1126,12 @@ class _UserCenterPageState extends State<UserCenterPage> {
           color: cs.surfaceContainer,
         ),
         clipBehavior: Clip.antiAlias,
+        // 不再用整卡一层 InkWell：原来点「畅听会员 / 概念会员」两行也会
+        // 打开签到日历页——两行长得像独立入口却没有各自的点击目标。
+        // 现在三行各自可点（签到→日历、畅听/概念→会员详情），卡片只做容器。
         child: Material(
           color: Colors.transparent,
-          // 整卡可点击进入签到日历页
-          child: InkWell(
-            onTap: () => Navigator.of(context, rootNavigator: true).push(
-              MaterialPageRoute(builder: (_) => const SignInCalendarPage()),
-            ),
-            child: Padding(
+          child: Padding(
               padding: const EdgeInsets.all(AppSpacing.md),
               // IntrinsicHeight：让左侧入口与右侧两行会员等高
               child: IntrinsicHeight(
@@ -1200,11 +1172,11 @@ class _UserCenterPageState extends State<UserCenterPage> {
             ),
           ),
         ),
-      ),
     );
   }
 
-  /// 签到日历展示位：仅做视觉提示，点击由整张会员卡片统一处理。
+  /// 签到日历入口：自己接管点击（此前靠整张会员卡的 InkWell 兜底，
+  /// 导致会员两行也被一起带进签到页）。现在它是独立可点目标。
   Widget _buildCalendarEntry(ColorScheme cs, TextTheme tt) {
     return Container(
       width: 76,
@@ -1212,21 +1184,30 @@ class _UserCenterPageState extends State<UserCenterPage> {
         color: cs.surfaceContainerHighest,
         borderRadius: AppRadius.mdAll,
       ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.event_available, color: cs.primary),
-          const Gap(AppSpacing.xs),
-          Text(
-            '签到日历',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: tt.labelMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-              color: cs.onSurface,
-            ),
+      clipBehavior: Clip.antiAlias,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => Navigator.of(context, rootNavigator: true).push(
+            MaterialPageRoute(builder: (_) => const SignInCalendarPage()),
           ),
-        ],
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.event_available, color: cs.primary),
+              const Gap(AppSpacing.xs),
+              Text(
+                '签到日历',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: tt.labelMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: cs.onSurface,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1253,9 +1234,9 @@ class _UserCenterPageState extends State<UserCenterPage> {
     return Row(
       children: [
         Container(
-          padding: const EdgeInsets.all(6),
+          padding: const EdgeInsets.all(AppSpacing.xs),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: AppRadius.smAll,
             color: dimmed ? cs.surfaceContainerHighest : iconBg,
           ),
           child: Icon(

@@ -7,6 +7,7 @@ const updateProjectUrl =
     'https://github.com/${GithubReleaseClient.owner}/${GithubReleaseClient.repo}';
 const updateMirrorWebsiteUrl =
     'https://git.hiwiki.org/zh-CN/repo/zzyoxml/md3music';
+const updateOfficialWebsiteUrl = 'https://musicplayer.ccwu.cc/';
 
 /// 网页下载是应用内更新之外的备用入口，交给系统默认浏览器处理。
 Future<void> openUpdateWebPage(String url) async {

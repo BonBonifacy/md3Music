@@ -243,4 +243,85 @@ void main() {
       expect(kPlayerFallbackMiniBarHeight, PlayerPanelSignal.fallbackBarHeight);
     });
   });
+
+  group('锚点与视口绑定（转屏后收起落点错位的根因）', () {
+    setUp(() {
+      PlayerPanelSignal.publishAnchor(top: 0, bottom: 0);
+      PlayerPanelSignal.anchorOwner = null;
+      PlayerPanelSignal.anchorViewportHeight = 0;
+    });
+
+    tearDown(() {
+      PlayerPanelSignal.publishAnchor(top: 0, bottom: 0);
+      PlayerPanelSignal.anchorOwner = null;
+      PlayerPanelSignal.anchorViewportHeight = 0;
+    });
+
+    test('未记录视口高度的旧登记一律视为有效（与引入该字段前逐值一致）', () {
+      publishPlayerDragOrigin(top: 640, bottom: 720);
+      expect(PlayerPanelSignal.anchorIsCurrent(800), isTrue);
+      expect(PlayerPanelSignal.anchorIsCurrent(400), isTrue);
+      expect(playerPanelAnchorCurrent(400), isTrue);
+    });
+
+    test('视口高度变了即判过期（横屏 393 → 竖屏 873）', () {
+      publishPlayerDragOrigin(top: 323, bottom: 393, viewportHeight: 393);
+      expect(PlayerPanelSignal.anchorIsCurrent(393), isTrue);
+      expect(PlayerPanelSignal.anchorIsCurrent(873), isFalse);
+    });
+
+    test('过期锚点按未登记处理：矩形退回贴底兜底，不再停在旧绝对 Y', () {
+      publishPlayerDragOrigin(top: 323, bottom: 393, viewportHeight: 393);
+      const Size rotated = Size(400, 873);
+      expect(
+        playerPanelAnchorRect(rotated).top,
+        greaterThan(rotated.height - 200),
+        reason: '旧视口的 323 在竖屏里是屏幕中间，直接拿来算落点就是「收在半空」',
+      );
+      expect(playerPanelAnchorRect(rotated).bottom, closeTo(873, 1e-9));
+    });
+
+    test('底栏下沉同样不吃过期锚点（否则面板还在半空就把底栏推走）', () {
+      publishPlayerDragOrigin(top: 323, bottom: 393, viewportHeight: 393);
+      final double stale = resolveBottomChromeSinkOffset(
+        progress: 0.5,
+        screenHeight: 873,
+        slotHeight: 80,
+        anchorTop: PlayerPanelSignal.anchorTop,
+        anchorBottom: PlayerPanelSignal.anchorBottom,
+      );
+      // 与「锚点未登记」走同一条兜底链。
+      final double unknown = resolveBottomChromeSinkOffset(
+        progress: 0.5,
+        screenHeight: 873,
+        slotHeight: 80,
+        anchorTop: 0,
+        anchorBottom: 0,
+      );
+      expect(stale, closeTo(unknown, 1e-9));
+
+      // 迷你条在转屏后重登记（新视口 873 下顶端 780）：下沉量按真实几何算，
+      // 与「沿用旧值 / 未登记」两条结果不同 —— 证明判据确实按视口分流。
+      publishPlayerDragOrigin(top: 780, bottom: 850, viewportHeight: 873);
+      final double fresh = resolveBottomChromeSinkOffset(
+        progress: 0.1,
+        screenHeight: 873,
+        slotHeight: 80,
+        anchorTop: PlayerPanelSignal.anchorTop,
+        anchorBottom: PlayerPanelSignal.anchorBottom,
+      );
+      final double freshUnknown = resolveBottomChromeSinkOffset(
+        progress: 0.1,
+        screenHeight: 873,
+        slotHeight: 80,
+        anchorTop: 0,
+        anchorBottom: 0,
+      );
+      expect(
+        fresh,
+        isNot(closeTo(freshUnknown, 1e-9)),
+        reason: '有效锚点必须参与下沉量计算（否则底栏与面板下沿之间露空带）',
+      );
+    });
+  });
 }

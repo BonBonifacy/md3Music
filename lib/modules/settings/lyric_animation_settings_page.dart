@@ -87,6 +87,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 min: LyricPreferences.minInactiveScaleForCurrentPlatform,
                 max: LyricPreferences.maxInactiveScaleForCurrentPlatform,
                 label: prefs.inactiveScale.toStringAsFixed(3),
+                defaultValue:
+                    LyricPreferences.defaultInactiveScaleForCurrentPlatform,
                 onChanged: (v) => prefs.setInactiveScale(v),
               ),
               _buildSliderTile<double>(
@@ -96,6 +98,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 min: LyricPreferences.minAlignPositionForCurrentPlatform,
                 max: LyricPreferences.maxAlignPositionForCurrentPlatform,
                 label: prefs.alignPosition.toStringAsFixed(2),
+                defaultValue:
+                    LyricPreferences.defaultAlignPositionForCurrentPlatform,
                 onChanged: (v) => prefs.setAlignPosition(v),
               ),
               const Divider(height: 24),
@@ -113,6 +117,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 min: LyricPreferences.minLiftHeightPxForCurrentPlatform,
                 max: LyricPreferences.maxLiftHeightPxForCurrentPlatform,
                 label: '${prefs.liftHeightPx.toStringAsFixed(1)} px',
+                defaultValue:
+                    LyricPreferences.defaultLiftHeightPxForCurrentPlatform,
                 onChanged: (v) => prefs.setLiftHeightPx(v),
               ),
               const Divider(height: 24),
@@ -131,6 +137,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 min: LyricPreferences.minPlayedOpacityForCurrentPlatform,
                 max: LyricPreferences.maxPlayedOpacityForCurrentPlatform,
                 label: '${(prefs.playedOpacity * 100).round()}%',
+                defaultValue:
+                    LyricPreferences.defaultPlayedOpacityForCurrentPlatform,
                 onChanged: (v) => prefs.setPlayedOpacity(v),
               ),
               _buildSliderTile<double>(
@@ -142,6 +150,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 min: LyricPreferences.minUnplayedOpacityForCurrentPlatform,
                 max: LyricPreferences.maxUnplayedOpacityForCurrentPlatform,
                 label: '${(prefs.unplayedOpacity * 100).round()}%',
+                defaultValue:
+                    LyricPreferences.defaultUnplayedOpacityForCurrentPlatform,
                 onChanged: (v) => prefs.setUnplayedOpacity(v),
               ),
               const Divider(height: 24),
@@ -161,6 +171,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 max: LyricPreferences.maxInterludeDotsStartXForCurrentPlatform,
                 label:
                     '${prefs.interludeDotsStartX.toStringAsFixed(2)} ×字号',
+                defaultValue: LyricPreferences
+                    .defaultInterludeDotsStartXForCurrentPlatform,
                 onChanged: (v) => prefs.setInterludeDotsStartX(v),
               ),
               _buildSliderTile<double>(
@@ -172,6 +184,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 max: LyricPreferences.maxInterludeDotRadiusForCurrentPlatform,
                 label:
                     '${prefs.interludeDotRadius.toStringAsFixed(2)} ×字号',
+                defaultValue: LyricPreferences
+                    .defaultInterludeDotRadiusForCurrentPlatform,
                 onChanged: (v) => prefs.setInterludeDotRadius(v),
               ),
               _buildSliderTile<double>(
@@ -183,6 +197,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 max: LyricPreferences.maxInterludeDotSpacingForCurrentPlatform,
                 label:
                     '${prefs.interludeDotSpacing.toStringAsFixed(2)} ×字号',
+                defaultValue: LyricPreferences
+                    .defaultInterludeDotSpacingForCurrentPlatform,
                 onChanged: (v) => prefs.setInterludeDotSpacing(v),
               ),
               const Divider(height: 24),
@@ -201,6 +217,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 max: LyricPreferences.maxCascadeMaxDelayMsForCurrentPlatform,
                 label:
                     '${prefs.cascadeMaxDelayMs.round()} ms',
+                defaultValue:
+                    LyricPreferences.defaultCascadeMaxDelayMsForCurrentPlatform,
                 onChanged: (v) => prefs.setCascadeMaxDelayMs(v),
               ),
               _buildSliderTile<double>(
@@ -211,6 +229,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 min: LyricPreferences.minCascadeBaseStepMsForCurrentPlatform,
                 max: LyricPreferences.maxCascadeBaseStepMsForCurrentPlatform,
                 label: '${prefs.cascadeBaseStepMs.round()} ms',
+                defaultValue:
+                    LyricPreferences.defaultCascadeBaseStepMsForCurrentPlatform,
                 onChanged: (v) => prefs.setCascadeBaseStepMs(v),
               ),
               _buildSliderTile<double>(
@@ -221,11 +241,15 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                 min: LyricPreferences.minCascadeDecayXForCurrentPlatform,
                 max: LyricPreferences.maxCascadeDecayXForCurrentPlatform,
                 label: '1/${prefs.cascadeDecayX.toStringAsFixed(2)}',
+                defaultValue:
+                    LyricPreferences.defaultCascadeDecayXForCurrentPlatform,
                 onChanged: (v) => prefs.setCascadeDecayX(v),
               ),
               SwitchListTile(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                title: const Text('错峰从当前行上方开始'),
+                title: _resettableTitle('错峰从当前行上方开始', () =>
+                    prefs.setStaggerFromCurrentLine(
+                        LyricPreferences.defaultStaggerFromCurrentLine)),
                 subtitle: const Text(
                     '开启：当前行的上一行领头回位，以下各行依次跟随；'
                     '关闭：从视口顶部开始错峰（慢歌提前预滚动消除当前行'
@@ -243,6 +267,7 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                   min: LyricPreferences.minPreStartBiasMs,
                   max: LyricPreferences.maxPreStartBiasMs,
                   label: '${prefs.preStartBiasMs.round()} ms',
+                  defaultValue: LyricPreferences.defaultPreStartBiasMs,
                   onChanged: (v) => prefs.setPreStartBiasMs(v),
                 ),
               const Divider(height: 24),
@@ -264,7 +289,29 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                   min: LyricPreferences.minDynamicColorMixRatioForCurrentPlatform,
                   max: LyricPreferences.maxDynamicColorMixRatioForCurrentPlatform,
                   label: '${(prefs.dynamicColorMixRatio * 100).round()}%',
+                  defaultValue: LyricPreferences
+                      .defaultDynamicColorMixRatioForCurrentPlatform,
                   onChanged: (v) => prefs.setDynamicColorMixRatio(v),
+                ),
+              // 渐变赋色取色浓度：需「歌词动态颜色」且赋色方式为渐变赋色或
+              // 背景增透时才显示。混白稀释过曝轨迹里的取色——纯取色太鲜艳
+              // （用户反馈，默认落回范围正中 50%），未播区不受它影响。
+              if (prefs.useDynamicLyricColor &&
+                  (prefs.fillStyle == LyricFillStyle.wordGradient ||
+                      prefs.fillStyle ==
+                          LyricFillStyle.backgroundBloom))
+                _buildSliderTile<double>(
+                  prefs: prefs,
+                  title: '渐变赋色取色浓度',
+                  subtitle: '过曝轨迹里的封色浓度：100% = 完全原取色，'
+                      '50% = 取色与白一半一半，0% = 不取色（纯白光核；'
+                      '需开启渐变赋色或背景增透）',
+                  value: prefs.gradientFillRatio,
+                  min: LyricPreferences.minGradientFillRatio,
+                  max: LyricPreferences.maxGradientFillRatio,
+                  label: '${(prefs.gradientFillRatio * 100).round()}%',
+                  defaultValue: LyricPreferences.defaultGradientFillRatio,
+                  onChanged: (v) => prefs.setGradientFillRatio(v),
                 ),
               // 歌词模糊强度：仅高斯模糊开启时显示（开关在播放页样式页，
               // AnimatedBuilder 监听 prefs，开关变化后进本页即自动显隐）
@@ -277,12 +324,15 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                   min: LyricPreferences.minBlurIntensityForCurrentPlatform,
                   max: LyricPreferences.maxBlurIntensityForCurrentPlatform,
                   label: prefs.blurIntensity.toStringAsFixed(1),
+                  defaultValue:
+                      LyricPreferences.defaultBlurIntensityForCurrentPlatform,
                   onChanged: (v) => prefs.setBlurIntensity(v),
                 ),
                 // 切行时不同 blurLevel 的模糊图交叉淡入淡出，默认关闭。
                 SwitchListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                  title: const Text('模糊等级渐变切换'),
+                  title: _resettableTitle('模糊等级渐变切换',
+                      () => prefs.setBlurLevelCrossfade(false)),
                   subtitle: const Text(
                     '切行时不同模糊程度的图用透明度交叉淡入淡出，'
                     '时长在下方调节；关闭时保持原有直接切换（默认）',
@@ -298,11 +348,13 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                   min: LyricPreferences.minBlurLevelFadeMs,
                   max: LyricPreferences.maxBlurLevelFadeMs,
                   label: '${prefs.blurLevelFadeMs.round()} ms',
+                  defaultValue: LyricPreferences.defaultBlurLevelFadeMs,
                   onChanged: (v) => prefs.setBlurLevelFadeMs(v),
                 ),
                 SwitchListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-                  title: const Text('提前换行'),
+                  title: _resettableTitle(
+                      '提前换行', () => prefs.setEarlyLineSwitch(false)),
                   subtitle: const Text(
                     '当前行逐字完成后提前滚到下一行，但保持模糊与缩放，'
                     '等字内渐变开始才激活（仅逐字歌词生效，默认关闭）',
@@ -319,6 +371,7 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                   min: LyricPreferences.minEntryBlurFadeMs,
                   max: LyricPreferences.maxEntryBlurFadeMs,
                   label: '${prefs.entryBlurFadeMs.round()} ms',
+                  defaultValue: LyricPreferences.defaultEntryBlurFadeMs,
                   onChanged: (v) => prefs.setEntryBlurFadeMs(v),
                 ),
               ],
@@ -333,6 +386,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                   min: LyricPreferences.minGlowIntensityForCurrentPlatform,
                   max: LyricPreferences.maxGlowIntensityForCurrentPlatform,
                   label: '${(prefs.glowIntensity * 100).round()}%',
+                  defaultValue:
+                      LyricPreferences.defaultGlowIntensityForCurrentPlatform,
                   onChanged: (v) => prefs.setGlowIntensity(v),
                 ),
               _buildGlowModeTile(prefs),
@@ -348,6 +403,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                   min: LyricPreferences.minGlowThresholdFactorForCurrentPlatform,
                   max: LyricPreferences.maxGlowThresholdFactorForCurrentPlatform,
                   label: prefs.glowThresholdFactor.toStringAsFixed(1),
+                  defaultValue: LyricPreferences
+                      .defaultGlowThresholdFactorForCurrentPlatform,
                   onChanged: (v) => prefs.setGlowThresholdFactor(v),
                 ),
               if (prefs.glowThresholdMode == GlowThresholdMode.fixed)
@@ -359,6 +416,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
                   min: LyricPreferences.minGlowFixedThresholdMsForCurrentPlatform,
                   max: LyricPreferences.maxGlowFixedThresholdMsForCurrentPlatform,
                   label: '${prefs.glowFixedThresholdMs.round()} ms',
+                  defaultValue: LyricPreferences
+                      .defaultGlowFixedThresholdMsForCurrentPlatform,
                   onChanged: (v) => prefs.setGlowFixedThresholdMs(v),
                 ),
               _buildFillModeTile(prefs),
@@ -379,7 +438,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
       children: [
         ListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-          title: const Text('字内渐变样式'),
+          title: _resettableTitle(
+              '字内渐变样式', () => prefs.setFillMode(LyricFillMode.sweep)),
           subtitle: const Text(
             '经典 = 宽过渡带（旧观感）；'
             '扫光 = 锐利且按字长/时长自适应、更快掠过字间空白（默认）',
@@ -419,7 +479,8 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
       children: [
         ListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-          title: const Text('辉光判定方式'),
+          title: _resettableTitle('辉光判定方式',
+              () => prefs.setGlowThresholdMode(GlowThresholdMode.fixed)),
           subtitle: const Text(
             '自适应 = 按歌曲节奏 / 字长 × 系数推断阈值；'
             '固定时长 = 字时长 ≥ 固定阈值才触发辉光',
@@ -470,7 +531,7 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
             '间奏点水平位置、间奏点圆点大小、间奏点间距、'
             '错峰上限/步长/衰减、错峰起点开关、歌词模糊强度、'
             '模糊等级渐变切换、模糊等级渐变时长、提前换行、模糊褪去时长、'
-            '动态颜色混色比例、辉光强度、辉光触发阈值、'
+            '动态颜色混色比例、渐变赋色取色浓度、辉光强度、辉光触发阈值、'
             '辉光判定方式、辉光固定时长、字内渐变样式）'
             '恢复为默认值，确定继续吗？',
           ),
@@ -523,6 +584,9 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
     // 动态颜色混色比例回到 15%（历史观感）
     await prefs.setDynamicColorMixRatio(
         LyricPreferences.defaultDynamicColorMixRatioForCurrentPlatform);
+    // 渐变赋色取色浓度回到默认 50%（范围正中）
+    await prefs.setGradientFillRatio(
+        LyricPreferences.defaultGradientFillRatio);
     await prefs.setGlowThresholdFactor(
         LyricPreferences.defaultGlowThresholdFactorForCurrentPlatform);
     // 辉光强度回到 100%（历史观感）
@@ -548,6 +612,21 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
     );
   }
 
+  /// 参数标题：长按把该项单独恢复默认，不影响本页其它参数。
+  ///
+  /// 与 AppBar「恢复本页默认」不同：单项影响小，不弹二次确认，
+  /// 直接重置并 toast 告知，用户可立即重新调整。
+  Widget _resettableTitle(String title, VoidCallback reset) {
+    return GestureDetector(
+      onLongPress: () {
+        reset();
+        AppHaptics.mediumImpact(HapticCategory.control);
+        showToast('已重置「$title」为默认值');
+      },
+      child: Text(title),
+    );
+  }
+
   /// 构建一个"M3ESlider + 标题/副标题"的无极滑块 tile。
   Widget _buildSliderTile<T extends num>({
     required LyricPreferences prefs,
@@ -556,6 +635,7 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
     required double value,
     required double min,
     required double max,
+    required double defaultValue,
     required String label,
     required ValueChanged<double> onChanged,
   }) {
@@ -564,7 +644,7 @@ class _LyricAnimationSettingsPageState extends State<LyricAnimationSettingsPage>
       children: [
         ListTile(
           contentPadding: const EdgeInsets.symmetric(horizontal: 16),
-          title: Text(title),
+          title: _resettableTitle(title, () => onChanged(defaultValue)),
           subtitle: subtitle == null ? null : Text(subtitle),
           trailing: Text(label),
         ),

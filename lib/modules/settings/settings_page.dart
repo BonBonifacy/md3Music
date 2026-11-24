@@ -50,6 +50,7 @@ import '../../core/services/music_haptics_service.dart';
 import '../../core/services/startup_auto_play.dart';
 import '../../core/services/wakelock_service.dart';
 import '../../core/services/diagnostic_exporter.dart';
+import '../../core/services/render_engine_info.dart';
 import '../../core/layout/responsive_layout.dart';
 import '../../widgets/player_seek_bar.dart';
 import '../../widgets/tv_dropdown_menu.dart';
@@ -247,6 +248,9 @@ class _SettingsPageState extends State<SettingsPage>
   bool _lyricDynamicColor = false;
   // 当前行以上的行是否跟随已播颜色（独立开关，默认关闭）
   bool _lyricAboveLinesPlayedColor = false;
+  // 动态颜色赋色方式（整行赋色 / 渐变赋色）：下拉仅在「歌词动态颜色」开启时
+  // 展示，切换即时生效；默认整行赋色（历史行为）
+  LyricFillStyle _lyricFillStyle = LyricFillStyle.lineUniform;
   // 平衡行换行：AM / MD 各一套独立偏好（key 不同，互不影响）
   bool _lyricLineBalanceAm = false;
   bool _lyricLineBalanceMd3 = false;
@@ -442,6 +446,8 @@ class _SettingsPageState extends State<SettingsPage>
   // 设置页却显示为关），且没有任何机制把两者拉回一致。
   // 预测性返回手势（predictive back）总开关：默认关闭
   bool _predictiveBackEnabled = false;
+  // 歌单详情页 A-Z 拖动索引条（右侧字母快速滚动条）：默认关闭
+  bool _playlistAlphabetIndexBar = false;
   // 歌单封面连贯过渡（列表卡片封面飞向详情页头）总开关：默认开启
   bool _playlistCoverTransition = true;
   // 悬浮播放器的进度指示（沿胶囊内缘包边一圈）：默认开启
@@ -988,6 +994,8 @@ class _SettingsPageState extends State<SettingsPage>
         .getDesktopModeEnabled();
     final predictiveBackEnabled = await _settingsRepository
         .getPredictiveBackEnabled();
+    final playlistAlphabetIndexBar = await _settingsRepository
+        .getPlaylistAlphabetIndexBarEnabled();
     final playlistCoverTransition = await _settingsRepository
         .getPlaylistCoverTransitionEnabled();
     final secondaryPlayerProgress = await _settingsRepository
@@ -1030,6 +1038,7 @@ class _SettingsPageState extends State<SettingsPage>
         '(global=${kDesktopModeEnabled.value})',
       );
       _predictiveBackEnabled = predictiveBackEnabled;
+      _playlistAlphabetIndexBar = playlistAlphabetIndexBar;
       _playlistCoverTransition = playlistCoverTransition;
       _secondaryPlayerProgress = secondaryPlayerProgress;
       _secondaryPlayerOpacity = secondaryPlayerOpacity;
@@ -1062,6 +1071,7 @@ class _SettingsPageState extends State<SettingsPage>
       _lyricDynamicColor = LyricPreferences.instance.useDynamicLyricColor;
       _lyricAboveLinesPlayedColor =
           LyricPreferences.instance.useAboveLinesPlayedColor;
+      _lyricFillStyle = LyricPreferences.instance.fillStyle;
       _lyricLineBalanceAm = LyricPreferences.instance.lineBalance;
       _lyricLineBalanceMd3 = Md3LyricPreferences.instance.lineBalance;
       _hideLyricCredits = LyricPreferences.instance.hideLyricCredits;
@@ -1862,7 +1872,7 @@ class _SettingsPageState extends State<SettingsPage>
   }) {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-      minVerticalPadding: AppSpacing.md,
+        minVerticalPadding: AppSpacing.sm,
       leading: Icon(icon, color: colorScheme.primary),
       title: Text(
         title,
@@ -3145,7 +3155,11 @@ class _SettingsPageState extends State<SettingsPage>
           value: _useDynamicColor,
           onChanged: (v) {
             AppHaptics.lightImpact(HapticCategory.control);
-            setState(() => _useDynamicColor = v);
+            // 与「封面动态取色」互斥：开启本项时界面同步关掉另一项。
+            setState(() {
+              _useDynamicColor = v;
+              if (v) _useCoverSeedColor = false;
+            });
             context.read<ThemeProvider>().setUseDynamicColor(v);
           },
         ),
@@ -3155,7 +3169,11 @@ class _SettingsPageState extends State<SettingsPage>
           value: _useCoverSeedColor,
           onChanged: (v) {
             AppHaptics.lightImpact(HapticCategory.control);
-            setState(() => _useCoverSeedColor = v);
+            // 与「使用系统主题色」互斥：开启本项时界面同步关掉另一项。
+            setState(() {
+              _useCoverSeedColor = v;
+              if (v) _useDynamicColor = false;
+            });
             context.read<ThemeProvider>().setUseCoverSeedColor(v);
           },
         ),
@@ -3357,6 +3375,23 @@ class _SettingsPageState extends State<SettingsPage>
             kHideNavBarOnSecondaryPages.value = value;
           },
         ),
+        // search: 滚动收起 上滑隐藏底栏 跟手 菜单底栏 导航栏 隐藏 navbar scroll collapse
+        // 直读全局判定源、ValueListenableBuilder 订阅（与下方「桌面布局」同模式）：
+        // 本页字段与 app.dart 冷启动播种互不知情时会出现「开关与实际生效相反」。
+        ValueListenableBuilder<bool>(
+          valueListenable: kNavBarScrollCollapseEnabled,
+          builder: (context, scrollCollapseEnabled, _) => SwitchListTile(
+            title: const Text('滚动时收起导航栏'),
+            subtitle: const Text('向上滑动时导航栏跟随手指收起，向下滑动时展开'),
+            value: scrollCollapseEnabled,
+            onChanged: (value) {
+              AppHaptics.lightImpact(HapticCategory.control);
+              // 立即生效：主布局订阅该判定源，重建 ResponsiveScaffold。
+              kNavBarScrollCollapseEnabled.value = value;
+              _settingsRepository.setNavBarScrollCollapseEnabled(value);
+            },
+          ),
+        ),
         // ⑤ 桌面布局：侧栏外壳总开关（默认关，开启后横竖屏皆用）
         _buildGroupLabel('桌面布局', colorScheme),
         // search: 桌面布局 侧栏 大屏 平板 横屏 双栏 工具栏 desktop
@@ -3535,6 +3570,18 @@ class _SettingsPageState extends State<SettingsPage>
             coverTransition: value,
             predictiveBack: _predictiveBackEnabled,
           ),
+        ),
+        // ⑨ 歌单歌曲字母索引条：标题排序时右侧出现拖动条，拖哪滚到哪
+        _buildGroupLabel('歌单歌曲列表', colorScheme),
+        // search: 字母索引 A-Z 滚动条 歌单排序 歌曲名称 字母条 拖动索引 az index bar
+        SwitchListTile(
+          title: const Text('字母索引条'),
+          subtitle: const Text('标题排序时显示右侧拖动条，实时跟手滚动'),
+          value: _playlistAlphabetIndexBar,
+          onChanged: (value) async {
+          setState(() => _playlistAlphabetIndexBar = value);
+          await _settingsRepository.setPlaylistAlphabetIndexBarEnabled(value);
+        },
         ),
       ],
     );
@@ -4506,6 +4553,65 @@ class _SettingsPageState extends State<SettingsPage>
                 }
               : null,
         ),
+        // 动态赋色方式：仅 AM 播放器且「歌词动态颜色」开启时显示。
+        // 「整行赋色」= 当前行统一使用封面混色（历史行为）；「渐变赋色」=
+        // 扫光带内用封面原色（不混色）向白过曝、已播侧纯白，唱到之处
+        // 封面色过曝成白（光学感）；「背景增透」= 条带取当前行背后实拍
+        // 背景色，提亮加饱和后随字内渐变映射，唱到之处背景色过曝偏白；
+        // 未播区均保持原有混色，不被改动。
+        // M3E 字段式下拉：初始选中值由 M3EDropdownItem.selected 表达，
+        // 每次 build 按当前值重建 items；同值早退，避免 setItems 回调引发回环。
+        // search: 赋色 整行 渐变 过曝 封面色 背景增透 增透
+        if (_lyricDynamicColor && _useAmStylePlayer)
+          ListTile(
+            title: const Text('动态赋色方式'),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  '整行赋色：当前行统一使用封面混色；'
+                  '渐变赋色：光扫过之处封色过曝成白，过曝余韵跨字流动，'
+                  '未播部分保持原混色；'
+                  '背景增透：取当前行背后实拍背景，提亮加饱和后随字内渐变'
+                  '映射，唱到之处背景色过曝偏白',
+                ),
+                const Gap(AppSpacing.sm),
+                TvDropdownMenu<LyricFillStyle>(
+                items: [
+                  for (final style in LyricFillStyle.values)
+                    M3EDropdownItem(
+                      label: lyricFillStyleLabel(style),
+                      value: style,
+                      selected: _lyricFillStyle == style,
+                    ),
+                ],
+                singleSelect: true,
+                showChipAnimation: false,
+                fieldStyle: M3EDropdownFieldStyle(
+                  hintText: '选择赋色方式',
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.md,
+                    vertical: AppSpacing.sm,
+                  ),
+                  selectedTextStyle: Theme.of(context).textTheme.bodyMedium,
+                ),
+                onSelectionChanged: (selected) {
+                  // 单选下再次点击已选中项会被取消选中：强制重建恢复原值
+                  if (selected.isEmpty) {
+                    setState(() {});
+                    return;
+                  }
+                  final style = selected.first.value;
+                  if (style == _lyricFillStyle) return;
+                  AppHaptics.lightImpact(HapticCategory.control);
+                  setState(() => _lyricFillStyle = style);
+                  LyricPreferences.instance.setFillStyle(style);
+                },
+              ),
+            ],
+            ),
+          ),
         // 上方已播行跟随已播颜色：当前行以上的行（清晰层 + 模糊层）改用
         // 当前行已播字的高亮色。独立开关，颜色来源仍是「歌词动态颜色」
         // 或自定义歌词文字色；两者都没启用时本开关无视觉变化。
@@ -5173,7 +5279,7 @@ class _SettingsPageState extends State<SettingsPage>
     switch (source) {
       case FontSource.system:
       case FontSource.bundled: // 已废弃（内置 SimHei 已移除），等同 system
-        return Platform.isWindows ? '默认（思源黑体）' : '系统默认（手机字体优先）';
+        return Platform.isWindows ? '默认（内置 MD3MusicSans）' : '系统默认（手机字体优先）';
       case FontSource.custom:
         return '自定义字体';
     }
@@ -5182,7 +5288,7 @@ class _SettingsPageState extends State<SettingsPage>
   /// 弹出字体来源选择面板。
   ///
   /// 两个选项：
-  /// - 默认：Windows 使用内置思源黑体，Android 使用系统字体链
+  /// - 默认：Windows 使用内置 MD3MusicSans 字体，Android 使用系统字体链
   /// - 自定义字体：通过 Android SAF 选择 .ttf/.otf 文件，
   ///   原生端拷贝到 filesDir/fonts/user_custom.ttf，Dart 端用 FontLoader 注册
   void _showFontSourceSheet(ThemeProvider themeProvider) {
@@ -5217,7 +5323,7 @@ class _SettingsPageState extends State<SettingsPage>
                       : Icons.radio_button_unchecked,
                   color: Theme.of(ctx).colorScheme.primary,
                 ),
-                title: Text(Platform.isWindows ? '默认（思源黑体）' : '系统默认'),
+                title: Text(Platform.isWindows ? '默认（内置 MD3MusicSans）' : '系统默认'),
                 onTap: () async {
                   await themeProvider.setFontSource(FontSource.system);
                   if (ctx.mounted) Navigator.pop(ctx);
@@ -5326,16 +5432,10 @@ class _SettingsPageState extends State<SettingsPage>
     context.read<PlayerProvider>().refreshQualityForNetwork();
   }
 
-  /// 从原生侧读取当前构建实际生效的渲染引擎（'skia' | 'impeller'）。
-  Future<String> _readCurrentRenderEngine() async {
-    try {
-      const channel = MethodChannel('com.md3music.md3music/render_engine');
-      final v = await channel.invokeMethod<String>('getCurrent');
-      return v == 'impeller' ? 'impeller' : 'skia';
-    } catch (_) {
-      return 'skia';
-    }
-  }
+  /// 读取当前构建实际生效的渲染引擎（'skia' | 'impeller'）。
+  /// 统一走 [currentRenderEngine]：Android 问原生通道，Windows 读构建期 define
+  /// （不再在通道不可用时误报 Skia，见 render_engine_info.dart 说明）。
+  Future<String> _readCurrentRenderEngine() => currentRenderEngine();
 
   /// 「硬件解码播放」三级子页：硬解开关、实测状态、设备解码器能力（MediaCodec）
   /// 与系统 offload 协商矩阵（折叠）。
@@ -5524,7 +5624,7 @@ class _SettingsPageState extends State<SettingsPage>
           if (supportsViperMaster)
             SwitchListTile(
               title: const Text('蝰蛇母带处理'),
-              subtitle: const Text('10 段均衡 + 限幅的母带级处理链，仅 Android；关闭时输出逐字节透传'),
+              subtitle: const Text('10 段均衡 + 限幅的母带级处理链（Windows 为 4 段近似）；关闭时输出逐字节透传'),
               value: _viperMasterEnabled,
               onChanged: (value) {
                 AppHaptics.lightImpact(HapticCategory.control);
@@ -7277,6 +7377,14 @@ class _SettingsPageState extends State<SettingsPage>
                     ? _checkWindowsUpdateManually
                     : _openReleasesUrl),
         ),
+        // search: 官网 官方网站 主页 网站
+        ListTile(
+          title: const Text('官网'),
+          subtitle: const Text(updateOfficialWebsiteUrl),
+          leading: const Icon(Icons.language),
+          trailing: const Icon(Icons.open_in_new, size: 18),
+          onTap: () => openUpdateWebPage(updateOfficialWebsiteUrl),
+        ),
         if (Platform.isWindows) ...[
           // search: 项目地址 GitHub 开源 仓库 网页
           ListTile(
@@ -7437,12 +7545,20 @@ class _SettingsPageState extends State<SettingsPage>
     }
   }
 
-  /// 导出诊断日志：构建 zip 报告 → 打开系统分享面板。
+  /// 导出诊断日志：Android 走系统分享面板；Windows 便携版直接保存到「下载」目录。
   Future<void> _exportDiagnosticLogs() async {
     if (_isExportingLogs) return;
     setState(() => _isExportingLogs = true);
     try {
-      await DiagnosticExporter.shareReport();
+      final saved = await DiagnosticExporter.exportDiagnosticLogs();
+      if (!mounted) return;
+      if (saved != null) {
+        showToast(
+          '已保存到下载目录：${saved.parent.path}\\'
+          '${saved.path.split(RegExp(r'[\\/]')).last}',
+          long: true,
+        );
+      }
     } catch (e) {
       // debugPrint 已被诊断日志服务捕获，错误会自动留痕
       debugPrint('导出诊断日志失败: $e');

@@ -1,6 +1,5 @@
 import '../../core/build_flags.dart';
 import '../../core/layout/page_layout.dart';
-import 'dart:io' show Platform;
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -69,7 +68,7 @@ class _EqualizerSettingsPageState extends State<EqualizerSettingsPage> {
         ],
       ),
       body: ContentWidth(
-        child: (kIsWeb || !Platform.isAndroid)
+        child: kIsWeb
           ? _buildUnsupportedPlatform(colorScheme)
           : ListenableBuilder(
               listenable: _eq,

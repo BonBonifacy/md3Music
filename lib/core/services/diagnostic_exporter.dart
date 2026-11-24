@@ -11,13 +11,19 @@ import 'package:share_plus/share_plus.dart';
 import '../../services/kugou_server.dart';
 import 'diagnostic_logger.dart';
 import 'media_store_service.dart';
+import 'render_engine_info.dart';
 import 'usb_audio_service.dart';
 
 /// 诊断报告构建与导出。
 ///
 /// 流程：flush 日志 → 收集日志目录内全部文件（app.log*、native_crash_*.txt）
-/// → 生成 diagnostic_info.txt（白名单字段）→ 打包 zip → share_plus 打开
-/// 系统分享面板，由用户自主选择去向。
+/// → 生成 diagnostic_info.txt（白名单字段）→ 打包 zip。
+///
+/// 导出方式按平台分流：
+/// - **Android**：share_plus 打开系统分享面板，由用户自主选择去向（原行为不变）；
+/// - **其它平台（Windows 便携版等）**：直接把 zip 复制到系统「下载」目录——
+///   便携版环境里系统分享目标大多不可用，拿到文件路径反而更直观；
+///   取不到下载目录时回退为 share_plus 分享，避免完全失败。
 ///
 /// 安全约定：信息收集为白名单制，只包含设备与运行环境字段，
 /// 绝不读取/写入任何登录令牌、cookie、用户 ID。
@@ -127,8 +133,45 @@ class DiagnosticExporter {
   }
 
   /// 经系统分享面板导出报告。
-  static Future<void> shareReport() async {
+  ///
+  /// 仅 Android 使用（行为保持不变）；其它平台走 [exportDiagnosticLogs]。
+  static Future<void> shareReport() => exportDiagnosticLogs();
+
+  /// 导出诊断报告：按平台分流——Android 走系统分享面板；Windows 便携版等
+  /// 直接保存到系统「下载」目录并返回落点（Android 返回 null）。
+  ///
+  /// 取不到下载目录的桌面平台回退为 share_plus 分享，保证不彻底失败。
+  static Future<File?> exportDiagnosticLogs() async {
     final zip = await buildReport();
+    if (!kIsWeb && Platform.isAndroid) {
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(zip.path)],
+          subject: 'MD3Music 诊断日志',
+          text: 'MD3Music 诊断日志（包含设备信息，不包含账号数据）',
+        ),
+      );
+      return null;
+    }
+    // 非 Android 桌面：优先直接保存到「下载」目录，便携版无需分享面板。
+    try {
+      final downloadsDir = await getDownloadsDirectory();
+      if (downloadsDir != null) {
+        if (!downloadsDir.existsSync()) {
+          await downloadsDir.create(recursive: true);
+        }
+        final dest = File('${downloadsDir.path}/${_baseName(zip.path)}');
+        await zip.copy(dest.path);
+        // 临时目录里的原件复制完即可删，避免堆积。
+        try {
+          await zip.delete();
+        } catch (_) {}
+        return dest;
+      }
+    } catch (_) {
+      // 下载目录读取失败 → 落到下面的分享兜底。
+    }
+    // 兜底：仍走系统分享（例如 macOS/Linux 无 Downloads 或 FFI 不可用时）。
     await SharePlus.instance.share(
       ShareParams(
         files: [XFile(zip.path)],
@@ -136,6 +179,7 @@ class DiagnosticExporter {
         text: 'MD3Music 诊断日志（包含设备信息，不包含账号数据）',
       ),
     );
+    return null;
   }
 
   /// 清空全部诊断日志（Dart 日志 + 原生崩溃文件）。
@@ -352,7 +396,6 @@ class DiagnosticExporter {
 
     String osVersion = '未知';
     String deviceModel = '未知';
-    String renderEngine = '不适用';
     if (!kIsWeb && Platform.isAndroid) {
       final summary = await MediaStoreService.getDeviceSummary();
       if (summary != null) {
@@ -361,18 +404,15 @@ class DiagnosticExporter {
         osVersion =
             'Android ${summary['release'] ?? ''} (API ${summary['sdkInt'] ?? ''})';
       }
-      // 渲染引擎（skia/impeller）由构建期 flavor 决定，是图形类 bug 的
-      // 关键上下文；复用设置页「当前渲染引擎」同款通道（MainActivity 注册）。
-      try {
-        const channel = MethodChannel('com.md3music.md3music/render_engine');
-        final v = await channel.invokeMethod<String>('getCurrent');
-        renderEngine = v == 'impeller' ? 'impeller' : 'skia';
-      } catch (_) {}
     } else if (!kIsWeb) {
       // Windows 桌面等非 Android 平台
       osVersion = Platform.operatingSystemVersion;
       deviceModel = Platform.operatingSystem;
     }
+    // 渲染引擎（skia/impeller）：Android 由 flavor 决定、Windows 由构建期
+    // MD3_RENDER_ENGINE define 决定；统一走 [currentRenderEngine]，避免
+    // Windows 上因原生通道缺失而误报 skia（见 render_engine_info.dart）。
+    final String renderEngine = !kIsWeb ? await currentRenderEngine() : '不适用';
 
     bool serverRunning = false;
     int? serverPort;

@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../../core/build_flags.dart';
 import '../../core/layout/bottom_chrome_dimens.dart';
 import '../../core/layout/bottom_chrome_scope.dart';
+import '../../core/layout/bottom_chrome_sink.dart';
 import '../../core/layout/display_space.dart';
 import '../../core/layout/responsive_layout.dart';
 import '../../core/layout/tv_player_bar_focus_bridge.dart';
@@ -271,11 +272,73 @@ class _MiniPlayerState extends State<MiniPlayer>
   /// 不能把它的几何写进登记簿。
   bool _tickerModeEnabled = true;
 
+  /// 本条在全局锚点登记簿里的**身份令牌**（只用于「视口变化后谁来重测」，
+  /// 见 [PlayerPanelSignal.anchorOwner]）。
+  final Object _anchorToken = Object();
+
+  /// 上一次登记锚点时的**视口高度**。与 [_viewportHeight] 不一致即说明发生过
+  /// 转屏 / 分屏 / 小窗 resize，需要按新视口重测（见 [_syncAnchorToViewport]）。
+  double _anchorViewportHeight = 0.0;
+
+  /// 当前视口高度（设计像素），在 [didChangeDependencies] 缓存。
+  ///
+  /// **不在 build / 帧末回调里现读 MediaQuery**：那两处建立依赖会绕过「依赖变化
+  /// → 本帧重建」的正常链路；缓存之后转屏仍会经 didChangeDependencies 回填，
+  /// 与 [_scaleAnchor] 同一套时机。
+  double _viewportHeight = 0.0;
+
+  /// 登记本条锚点（顶端 + 底端，**当前视口**口径）。
+  ///
+  /// 与 [_onRawDown] 的测量同一套空间（设计像素、锚点空间），额外带上
+  /// 「谁登记的 + 登记时视口多高」：前者让视口变化后只有这一条来重测，
+  /// 后者让消费端（播放页路由）能判定锚点是否已经过期。
+  void _publishAnchor() {
+    _anchorViewportHeight = _viewportHeight;
+    publishPlayerDragOrigin(
+      top: _miniTopY,
+      bottom: _miniBottomY,
+      owner: _anchorToken,
+      viewportHeight: _viewportHeight,
+    );
+  }
+
+  /// 视口变了就按新视口**重测并重登记**锚点（转屏 / 分屏 / 小窗 resize）。
+  ///
+  /// 为什么必须重登：锚点是量到的绝对 Y。横屏时迷你条顶端约 323（屏高 393），
+  /// 转成竖屏（屏高 873）后这个值仍在屏中间附近 —— 播放页的收起动画会以它
+  /// 为落点，于是「下拉收起」把面板收到半空，之后真迷你条才在屏底出现。
+  ///
+  /// 门控三条，缺一不可：
+  /// - **只重测登记过锚点的那一条**（[PlayerPanelSignal.anchorOwner]）：多形态
+  ///   同屏时另一条的重测值会把用户实际点的落点覆盖掉；
+  /// - **后台 tab 不重测**（[_tickerModeEnabled]）：IndexedStack 保活的 tab 里
+  ///   那条几何不属于当前视口布局；
+  /// - **量不到就放弃**（未挂载 / 盒子 0×0，例如形态交棒飞行窗口里的 Offstage）：
+  ///   保留旧值，下一次 build 的 post-frame 还会再试（见
+  ///   [_scheduleRegisterResidentRect]）；始终量不到时路由侧会把过期锚点当成
+  ///   「未知」退化到贴底兜底，不会把面板收到屏中间。
+  void _syncAnchorToViewport() {
+    if (!mounted) return;
+    if (!identical(PlayerPanelSignal.anchorOwner, _anchorToken)) return;
+    if ((_viewportHeight - _anchorViewportHeight).abs() < 0.5) return;
+    if (!_tickerModeEnabled) return;
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached || !box.hasSize || box.size.height <= 0) {
+      return;
+    }
+    _miniTopY = box.localToGlobal(Offset.zero, ancestor: _scaleAnchor).dy;
+    _miniBottomY = _miniTopY + box.size.height;
+    _publishAnchor();
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _scaleAnchor = DisplayScaleReference.anchorOf(context);
     _reduceMotion = MediaQuery.disableAnimationsOf(context);
+    // 视口高度也在此缓存：转屏 / 分屏 / 小窗 resize 都会让 MediaQueryData 变，
+    // 本回调必然再跑一次（见 [_syncAnchorToViewport]）。
+    _viewportHeight = MediaQuery.sizeOf(context).height;
     // 登记核对条件必须在 dependencies 时机取：ModalRoute.of / TickerMode.valuesOf
     // 都是 InheritedWidget 依赖。
     _residentRoute = ModalRoute.of(context);
@@ -460,7 +523,7 @@ class _MiniPlayerState extends State<MiniPlayer>
       // touchSlop 是 dp 语义（与显示缩放同源），可直接与设计像素位移比较
       if (deltaY < kTouchSlop || deltaY <= deltaX) return;
       _dragActivated = true;
-      publishPlayerDragOrigin(top: _miniTopY, bottom: _miniBottomY);
+      _publishAnchor();
       playerDragActive.value = true; // 显示跟手覆盖层
     }
     _dragDistance = deltaY.clamp(0.0, double.infinity);
@@ -633,6 +696,9 @@ class _MiniPlayerState extends State<MiniPlayer>
     }
 
     // 持续登记本条矩形（设计像素、锚点空间），供形态交叉过渡浮层取起点。
+    // 视口变化（转屏 / 分屏 / 小窗 resize）后的锚点重测也在它的帧末回调里做 ——
+    // **不能在这里（build）测**：那一刻布局还没跑，量到的是上一帧的几何，却会被
+    // 打上「新视口」的戳，反而把过期值伪装成新鲜的。
     _scheduleRegisterResidentRect();
 
     // 飞行封面纹理预热（笔 A）：只在「本会话已展开过播放页」之后预付，见方法注释。
@@ -711,7 +777,7 @@ class _MiniPlayerState extends State<MiniPlayer>
             if (_dragActivated) return;
             // 点击进入也登记收起基准，让播放页下拉收起对齐迷你条真实位置
             if (_miniTopY > 0) {
-              publishPlayerDragOrigin(top: _miniTopY, bottom: _miniBottomY);
+              _publishAnchor();
             }
             openFullPlayer(context);
           },
@@ -850,6 +916,9 @@ class _MiniPlayerState extends State<MiniPlayer>
   void _scheduleRegisterResidentRect() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // 本帧布局已经按新视口跑完：此刻重测锚点才拿得到正确几何（build 里
+      // 触发的那次重测可能量到的是上一帧的旧布局）。
+      _syncAnchorToViewport();
       if (inBottomBarFormFlight()) return;
       if (_residentRoute?.isCurrent != true || !_tickerModeEnabled) return;
       final box = context.findRenderObject() as RenderBox?;
@@ -875,7 +944,7 @@ class _MiniPlayerState extends State<MiniPlayer>
         if (_dragActivated) return;
         // 点击进入也登记收起基准，让播放页下拉收起对齐迷你条真实位置
         if (_miniTopY > 0) {
-          publishPlayerDragOrigin(top: _miniTopY, bottom: _miniBottomY);
+          _publishAnchor();
         }
         openFullPlayer(context);
       },

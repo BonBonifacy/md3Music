@@ -11,6 +11,8 @@
 ///
 /// 人员名单（Lyrics by/Composed by/Produced by 等）不参与对唱分组，保持默认对齐。
 /// 翻译/罗马音若同样带中文前缀则一并剔除，对齐跟随原文。
+/// 纯标记行（独占一行的「男：」「女：」「合唱：」「歌手名：」等）整行移除，
+/// 不再以空文本行占位；其对齐状态由紧随其后的正文行继承。
 library;
 
 import 'package:md3music/widgets/apple_lyrics/models/lyric_line.dart';
@@ -26,10 +28,11 @@ enum DuetAlignment {
 
 /// 对唱歌词处理结果。
 class DuetResult {
-  /// 剔除标记后的行列表（与原列表等长、等时间戳）。
+  /// 剔除标记后的可见行：纯标记行整行移除，不再以空文本占位；
+  /// 其余行保持原顺序与原时间戳。长度 ≤ 原歌词行数。
   final List<LyricLine> cleanedLines;
 
-  /// 每行对应的对齐方式。
+  /// 与 [cleanedLines] 等长、逐行对应的对齐方式。
   final List<DuetAlignment> alignments;
 
   DuetResult(this.cleanedLines, this.alignments);
@@ -116,11 +119,16 @@ class DuetLayout {
       );
     }
 
-    // 0. AgentId 模式：TTML 对唱（任意主行带 agentId）时按演唱者序号映射。
-    //    按 agentId 首次出现顺序分配：第 1 个演唱者=left，第 2 个不同演唱者=right，
-    //    其余演唱者（合唱/和声/背景）=center。优先于下方的文本标记模式。
+    // 0. AgentId 模式：TTML 对唱（任意正文行带 agentId）时按演唱者序号映射。
+    //    先移除纯标记行，再按剩余正文行的 agentId 首次出现顺序分配：
+    //    第 1 个=left，第 2 个=right，其余=center。优先于下方的文本标记模式。
+    final visibleLines = lines
+        .where(
+          (l) => !_isPureGenderMarker(l.text) && _singerMarker(l.text) == null,
+        )
+        .toList();
     final agentIds = <String>{}..addAll(
-        lines.map((l) => l.agentId).whereType<String>());
+        visibleLines.map((l) => l.agentId).whereType<String>());
     if (agentIds.isNotEmpty) {
       int mapped = 0;
       final agentToAlign = <String, DuetAlignment>{};
@@ -132,8 +140,9 @@ class DuetLayout {
         mapped++;
       }
       return DuetResult(
-        List.of(lines),
-        lines.map((l) => agentToAlign[l.agentId] ?? DuetAlignment.defaultAlign)
+        visibleLines,
+        visibleLines
+            .map((l) => agentToAlign[l.agentId] ?? DuetAlignment.defaultAlign)
             .toList(),
       );
     }
@@ -191,18 +200,11 @@ class DuetLayout {
     for (final line in lines) {
       final text = line.text;
 
-      // 1. 中文纯标记行
+      // 1. 中文纯标记行：整行移除；activeGender 留待正文行继承。
       final gender = _genderMarker(text);
       if (gender != null) {
         activeGender = gender;
         activeSingersForAlign = null;
-        cleaned.add(line.copyWith(
-          text: '',
-          words: const [],
-          clearTranslation: true,
-          clearRoma: true,
-        ));
-        aligns.add(_genderToAlign(gender, leftGender, rightGender));
         continue;
       }
 
@@ -230,19 +232,11 @@ class DuetLayout {
         continue;
       }
 
-      // 3. 歌手名标记行
+      // 3. 歌手名标记行：整行移除；activeSingersForAlign 留待正文行继承。
       final singers = _singerMarker(text);
       if (singers != null) {
         activeSingersForAlign = singers;
         activeGender = null;
-        // 标记行文本置空，保留时间戳
-        cleaned.add(line.copyWith(
-          text: '',
-          words: const [],
-          clearTranslation: true,
-          clearRoma: true,
-        ));
-        aligns.add(_singersToAlign(singers, leftSinger, rightSinger));
         continue;
       }
 

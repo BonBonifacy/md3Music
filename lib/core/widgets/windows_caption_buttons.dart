@@ -147,7 +147,11 @@ class _WindowsCaptionButtonState extends State<WindowsCaptionButton> {
                     child: Center(
                       child: CustomPaint(
                         size: const Size(12, 12),
-                        painter: _CaptionGlyphPainter(widget.glyph, glyphColor),
+                        painter: _CaptionGlyphPainter(
+                          widget.glyph,
+                          glyphColor,
+                          MediaQuery.devicePixelRatioOf(context),
+                        ),
                       ),
                     ),
                   ),
@@ -435,10 +439,23 @@ class _WindowsCaptionButtonRowState extends State<WindowsCaptionButtonRow>
 }
 
 class _CaptionGlyphPainter extends CustomPainter {
-  const _CaptionGlyphPainter(this.glyph, this.color);
+  const _CaptionGlyphPainter(this.glyph, this.color, this.devicePixelRatio);
 
   final WindowsCaptionGlyph glyph;
   final Color color;
+
+  /// 真实设备像素比（显示大小缩放已计入 MediaQuery）。用于把 1dp 描边对齐到
+  /// 物理像素中心，避免 125%/150% 缩放下线条被抗锯齿摊成半透明而发虚。
+  final double devicePixelRatio;
+
+  /// 把逻辑坐标 snap 到物理像素中心。
+  ///
+  /// 1px 描边以整数 dp 为中心时横跨两个物理像素行（各 50% 覆盖），看着发灰；
+  /// 对齐到 `n + 0.5/dpr` 后描边正好盖住一个物理像素列，线条锐利。
+  double _snap(double value) {
+    final dpr = devicePixelRatio > 0 ? devicePixelRatio : 1.0;
+    return (value * dpr).round() / dpr + 0.5 / dpr;
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -447,27 +464,43 @@ class _CaptionGlyphPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1;
     if (glyph == WindowsCaptionGlyph.minimize) {
-      canvas.drawLine(const Offset(1, 6), const Offset(11, 6), pen);
+      final y = _snap(6);
+      canvas.drawLine(Offset(1, y), Offset(11, y), pen);
     } else if (glyph == WindowsCaptionGlyph.maximize) {
-      canvas.drawRect(const Rect.fromLTWH(1, 1, 10, 10), pen);
+      final l = _snap(1);
+      final t = _snap(1);
+      final r = _snap(11);
+      final b = _snap(11);
+      canvas.drawRect(Rect.fromLTRB(l, t, r, b), pen);
     } else if (glyph == WindowsCaptionGlyph.restore) {
+      final x1 = _snap(1);
+      final y1 = _snap(3);
+      final x2 = _snap(3);
+      final y2 = _snap(1);
+      final x3 = _snap(11);
+      final y3 = _snap(9);
+      final x4 = _snap(9);
       canvas.drawPath(
         Path()
-          ..moveTo(3, 3)
-          ..lineTo(3, 1)
-          ..lineTo(11, 1)
-          ..lineTo(11, 9)
-          ..lineTo(9, 9),
+          ..moveTo(x2, y1)
+          ..lineTo(x2, y2)
+          ..lineTo(x3, y2)
+          ..lineTo(x3, y3)
+          ..lineTo(x4, y3),
         pen,
       );
-      canvas.drawRect(const Rect.fromLTWH(1, 3, 8, 8), pen);
+      canvas.drawRect(Rect.fromLTRB(x1, _snap(3), _snap(9), _snap(11)), pen);
     } else {
-      canvas.drawLine(const Offset(1, 1), const Offset(11, 11), pen);
-      canvas.drawLine(const Offset(11, 1), const Offset(1, 11), pen);
+      final a = _snap(1);
+      final z = _snap(11);
+      canvas.drawLine(Offset(a, a), Offset(z, z), pen);
+      canvas.drawLine(Offset(z, a), Offset(a, z), pen);
     }
   }
 
   @override
   bool shouldRepaint(covariant _CaptionGlyphPainter oldDelegate) =>
-      oldDelegate.glyph != glyph || oldDelegate.color != color;
+      oldDelegate.glyph != glyph ||
+      oldDelegate.color != color ||
+      oldDelegate.devicePixelRatio != devicePixelRatio;
 }

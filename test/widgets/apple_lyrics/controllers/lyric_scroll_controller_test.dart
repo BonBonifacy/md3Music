@@ -489,5 +489,76 @@ void main() {
           reason: '拖动期间不应被快速切行兜底抢回');
       controller.dispose();
     });
+
+    test('18. suppressFollow=true 时 setCurrentLine 不夺取滚动位置', () {
+      final controller = LyricScrollController();
+      controller.setViewportSize(const Size(400, 600));
+      controller.setCurrentLine(0, isSeeking: false, lineHeight: 40);
+      // 用户手动滚到别处：190 - 80 = 110
+      controller.onUserScroll(-80);
+      expect(controller.posY, closeTo(110, 0.5));
+
+      controller.suppressFollow = true;
+      // 播放推进到下一行：选择模式不跟随（若跟随 target 会变成 150）
+      controller.setCurrentLine(1, isSeeking: false, lineHeight: 40, lineTop: 40);
+      expect(controller.currentTarget, closeTo(110, 0.5));
+
+      // 恢复后仍不立刻夺取（用户滚动后等待回弹的语义不变）
+      controller.suppressFollow = false;
+      controller.setCurrentLine(2, isSeeking: false, lineHeight: 40, lineTop: 80);
+      expect(controller.currentTarget, closeTo(110, 0.5));
+      controller.dispose();
+    });
+
+    test('19. suppressFollow=true 时自动回弹倒计时冻结，恢复后照常回弹', () {
+      final controller = LyricScrollController();
+      controller.setViewportSize(const Size(400, 600));
+      controller.setCurrentLine(0, isSeeking: false, lineHeight: 40);
+      controller.onUserScroll(-80);
+      // 松手进入等待回弹状态（不松手 isWaitingForAutoReturn 恒为 false）
+      controller.onUserScrollEnd();
+      controller.suppressFollow = true;
+      // 累计 10s，远超 autoReturnMs；倒计时不推进，永不触发回弹
+      for (int i = 0; i < 100; i++) {
+        controller.tick(0.1);
+      }
+      expect(controller.isWaitingForAutoReturn, isTrue,
+          reason: '抑制期间倒计时冻结');
+      expect(controller.currentTarget, closeTo(110, 0.5));
+
+      controller.suppressFollow = false;
+      // 12s > 5s 倒计时 + 弹簧收敛时间
+      for (int i = 0; i < 120; i++) {
+        controller.tick(0.1);
+      }
+      expect(controller.currentTarget, closeTo(190, 0.5),
+          reason: '恢复后倒计时到期，回弹到当前行 targetY');
+      controller.dispose();
+    });
+
+    test('20. returnToCurrentLineNow 立即回弹到当前行', () {
+      final controller = LyricScrollController();
+      controller.setViewportSize(const Size(400, 600));
+      controller.setCurrentLine(0, isSeeking: false, lineHeight: 40);
+      controller.onUserScroll(-80);
+      controller.onUserScrollEnd();
+      controller.suppressFollow = true;
+      for (int i = 0; i < 10; i++) {
+        controller.tick(0.1); // 抑制期间倒计时冻结
+      }
+      expect(controller.currentTarget, closeTo(110, 0.5));
+
+      controller.suppressFollow = false;
+      // 不等倒计时：立即回弹到当前行 targetY（= 190）
+      controller.returnToCurrentLineNow();
+      expect(controller.isWaitingForAutoReturn, isFalse,
+          reason: '立即回弹后不再处于等待态');
+      for (int i = 0; i < 120; i++) {
+        controller.tick(0.1);
+      }
+      expect(controller.currentTarget, closeTo(190, 0.5),
+          reason: 'target 立即指向当前行，弹簧平滑滚回');
+      controller.dispose();
+    });
   });
 }

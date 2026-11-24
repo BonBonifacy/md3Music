@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:m3e_core/m3e_core.dart';
 
 import '../../core/build_flags.dart';
+import '../../core/fx/waves/distortion_wave.dart';
 import '../../core/utils/song_detail_nav.dart';
 import '../../providers/kugou_provider.dart';
 import '../../providers/player_provider.dart';
@@ -71,6 +72,9 @@ class _CoverFlowPageState extends State<CoverFlowPage> {
   void initState() {
     super.initState();
     kCoverFlowSource.addListener(_onSourceChanged);
+    // 点封面进播放页的波过场：提前把着色器编译好，第一下点击就走波而不是退回
+    // 面板展开（着色器没就绪时那条路选择不演波，见 DraggablePlayerRoute）。
+    unawaited(WavePrograms.load());
     // provider 内 5 分钟 TTL，重复进入自动复用缓存；跨天失效自动重拉。
     // 首拉延迟到首帧后：getPersonalFm 等在 provider 空闲时会同步
     // _beginLoading → notifyListeners，挂在 initState 里会在 build
@@ -706,6 +710,16 @@ class _CoverFlowViewState extends State<_CoverFlowView>
     return KeyEventResult.ignored;
   }
 
+  /// 这张卡片此刻在屏幕上的矩形，给进入播放页的波当起点。
+  ///
+  /// 取布局矩形（不含卡片自己的透视矩阵）：能进播放页的只有正中的那张，它的
+  /// 矩阵恰好是恒等（`angle = 0`、`scale = 1`、`pos = 0`），两者重合。
+  Rect? _cardRectOf(BuildContext cardContext) {
+    final box = cardContext.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
   /// 点击中央卡起播，并按源给播放队列挂上续播器：
   /// - 私人FM 各档：[PersonalFmWidgetActions.armRefill]（FmRefill，与 FM 页 /
   ///   桌面小部件同一条链路，含杀后台后恢复续播器的会话标记）；
@@ -804,7 +818,8 @@ class _CoverFlowViewState extends State<_CoverFlowView>
                   // 点击：中央专辑播放并进入播放器；两侧专辑自动滚动聚焦到中心
                   if (isCenter) {
                     _playFromIndex(index);
-                    openFullPlayer(context);
+                    // 过场波的起点就是这张封面：从它扩散，把整屏换成播放页。
+                    openFullPlayer(context, waveSource: _cardRectOf(context));
                   } else {
                     _resetWheelTarget(); // 点击接管聚焦：滚轮基址作废
                     _animateTo(index.toDouble());

@@ -1,6 +1,8 @@
 import '../../core/layout/adaptive_navigator.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:material_ui/material_ui.dart';
+
+import '../../widgets/app_empty_state.dart';
 import 'package:provider/provider.dart';
 import '../download/download_actions.dart';
 import 'package:m3e_core/m3e_core.dart';
@@ -714,7 +716,7 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
                                                           ),
                                                   ),
                                                 ),
-                                                const SizedBox(width: 20),
+                                                const Gap(AppSpacing.xl),
                                                 Expanded(
                                                   // 文字区可视高度随 availH 收缩：超出部分由
                                                   // ClipRect 裁掉并配合淡出，折叠过程中不触发
@@ -800,7 +802,7 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
                                           children: [
                                             Icon(Icons.info_outline, size: 16, color: colorScheme.onSurfaceVariant,
                                           ),
-                                            const SizedBox(width: 6),
+                                            const Gap(AppSpacing.sm),
                                             Text(
                                               '专辑介绍',
                                               style: textTheme.labelLarge?.copyWith(color: colorScheme.onSurfaceVariant,
@@ -941,8 +943,12 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
                             ),
                           ),
                           // 歌曲列表
+                          // SliverPadding 补 6：SongListItem 自带 10dp，6+10=16 才能与
+                          // 上方介绍块 / 搜索框的页面边距对齐（原先是 10，比同页其它内容浅 6）。
                           if (!_isLoading)
-                          SliverList(
+                          SliverPadding(
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            sliver: SliverList(
                             delegate: SliverChildBuilderDelegate(
                               (context, index,
                           ) {
@@ -965,26 +971,15 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
                               },
                               childCount: _displaySongs.length),
                           ),
+                          ),
                           // 搜索无结果
                           if (_isSearching && _displaySongs.isEmpty && _songs.isNotEmpty)
                             SliverToBoxAdapter(
-                              child: Padding(
-                                padding: const EdgeInsets.all(AppSpacing.xxl),
-                                child: Column(
-                                  children: [
-                                    Icon(Icons.search_off, size: 48, color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                  ),
-                                    const Gap(AppSpacing.sm),
-                                    Text(
-                                      '没有找到「$_searchQuery」相关的歌曲',
-                                      style: textTheme.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant,
-                                    ),
-                                    ),
-                                  ],
-                                ),
+                              child: AppEmptyState.inline(
+                                icon: Icons.search_off,
+                                title: '没有找到「$_searchQuery」相关的歌曲',
                               ),
                             ),
-                          // CustomScrollView 不会像 ListView 自动消费 MediaQuery.padding；
                           // 宿主已把悬浮播放器高度合入底部 padding，这里显式补成可滚动空间，
                           // 让专辑最后一首歌也能滚到悬浮条上方。
                           SliverToBoxAdapter(
@@ -1002,29 +997,11 @@ class _AlbumDetailPageState extends State<AlbumDetailPage> {
   }
 
   Widget _buildError(BuildContext context, ColorScheme colorScheme) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.xxl),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.cloud_off, size: 48, color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5)),
-            const Gap(AppSpacing.md),
-            Text(
-              '加载失败',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(color: colorScheme.onSurfaceVariant),
-            ),
-            const Gap(AppSpacing.sm),
-            Text(
-              _error ?? '未知错误',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
-              textAlign: TextAlign.center,
-            ),
-            const Gap(AppSpacing.lg),
-            FilledButton.tonal(onPressed: _fetchAlbum, child: const Text('重试')),
-          ],
-        ),
-      ),
+    return AppEmptyState(
+      icon: Icons.cloud_off,
+      title: '加载失败',
+      subtitle: _error ?? '未知错误',
+      action: FilledButton.tonal(onPressed: _fetchAlbum, child: const Text('重试')),
     );
   }
 }

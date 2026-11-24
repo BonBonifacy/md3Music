@@ -58,7 +58,6 @@ import io.github.proify.lyricon.lyric.model.Song
 
 class AudioPlaybackService : Service() {
     companion object {
-        const val CHANNEL_ID = "md3music_audio_playback"
         // 保活通知专用频道：以最低重要度静默显示，用户可长按进入系统通知设置关闭。
         // 通知对象常驻支撑 startForeground，避免服务被系统降级（DETACH 方案已废弃）。
         private const val LEGACY_KEEPALIVE_CHANNEL_ID = "md3music_keepalive"
@@ -178,8 +177,18 @@ class AudioPlaybackService : Service() {
         private var playerReadyEngine: FlutterEngine? = null
 
         /// 当前是否正在播放（供 LockScreenLyricReceiver 判断锁屏时是否拉起歌词界面）。
+        ///
+        /// 只在 `updateNotification()` 里赋值，是通知更新的**副产物**，不是真实播放态的
+        /// 权威来源：后台/通知链停摆时会冻结成过期值。因此它不得再用于"要不要派发下电
+        /// 暂停"这类决策（2026-11-19 诊断包实证 15/15 次被它判死），只作日志字段；
+        /// [isNowPlayingUpdatedAt] 让日志能自证这个值有多旧。
         @Volatile
         var isNowPlaying = false
+
+        /// [isNowPlaying] 最近一次被通知链写入的墙钟时间（ms）。
+        /// 0 表示本次进程内从未更新过（诊断包据此判断"状态压根没同步过"）。
+        @Volatile
+        var isNowPlayingUpdatedAt = 0L
 
         /// MD3Music fork v40：解析 Dart 推来的原子随身听三棵列表快照——静态实现，
         /// 前台主引擎通道（MainActivity）与 headless 引擎通道（本服务）共用一处。
@@ -1409,6 +1418,7 @@ class AudioPlaybackService : Service() {
                 foregroundStarted = false
                 releaseWakeLock()
                 isNowPlaying = false
+                isNowPlayingUpdatedAt = SystemClock.elapsedRealtime()
                 // 停止播放/退出 App 后锁屏歌词不应残留
                 LockScreenLyricActivity.dismiss()
                 stopSelf()
@@ -1858,16 +1868,25 @@ class AudioPlaybackService : Service() {
     /// 的 provider 链），本占位只负责在 5s 死线内完成 startForeground 登记并
     /// 在被系统拒绝时自停（startForegroundDetached 的 catch 崩溃防护依赖
     /// foregroundStarted 只在成功后置位）。
+    ///
+    /// 渠道必须与 showNotification/refreshKeepaliveForeground 一致用
+    /// KEEPALIVE_CHANNEL_ID（同一 ID 1002 覆盖更新）：旧的 md3music_audio_playback
+    /// 渠道曾发「准备播放」占位，随后保活通知换渠道发布，两个渠道的通知被
+    /// SystemUI 当成两条并存 —— 播放后「准备播放」仍滞留通知栏（issue #245）。
     private fun ensureForeground() {
         if (foregroundStarted) return
         try {
-            val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            val builder = NotificationCompat.Builder(this, KEEPALIVE_CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_launcher_monochrome)
-                .setContentTitle("md3music")
-                .setContentText("准备播放")
+                .setContentTitle("")
+                .setContentText(KEEPALIVE_NOTIFICATION_TEXT)
+                .setContentIntent(launchPendingIntent())
                 .setOngoing(true)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPriority(NotificationCompat.PRIORITY_MIN)
                 .setOnlyAlertOnce(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setShowWhen(false)
+                .setSilent(true)
             startForegroundDetached(builder)
         } catch (_: Exception) {}
     }
@@ -2261,6 +2280,7 @@ class AudioPlaybackService : Service() {
                         foregroundStarted = false
                         releaseWakeLock()
                         isNowPlaying = false
+                        isNowPlayingUpdatedAt = SystemClock.elapsedRealtime()
                         LockScreenLyricActivity.dismiss()
                         stopSelf()
                         result.success(true)
@@ -2533,7 +2553,7 @@ class AudioPlaybackService : Service() {
     }
 
     /**
-     * 车机信号总入口：判开关 → 写诊断日志 → 判播放态 → 派发。
+     * 车机信号总入口：判开关 → 写诊断日志 → 派发。
      *
      * 开关关闭时**内存/Logcat 保持静默**（RingLog 不写，保证"关闭 = 与旧版本无差别"），
      * 但落盘文件 [CarPowerLogFile] 仍记一行到达：否则下次拿诊断包无法区分
@@ -2542,6 +2562,13 @@ class AudioPlaybackService : Service() {
      *
      * 开关开启时的日志走 [RingLog]（Log.i + 进程内环形缓冲双写）+ 落盘双通道：
      * 环形给"当场看"，落盘给"断电后看"。
+     *
+     * **不再用 [isNowPlaying] 做闸门**（2026-11-19 诊断包实证）：该值只在
+     * `updateNotification()` 里赋值，是通知更新的副产物，后台/通知链停摆时会冻结成
+     * 过期值。记录期内 15 次下电信号全部走 `signal ignored (not playing)`、
+     * `power-down -> dispatch` 命中 0 次——功能因此从未生效。下电是"无论是否在播都该
+     * 收摊"的事件，对已暂停的播放器再发一次 pause 是幂等无害的，所以这里一律派发，
+     * 把 [isNowPlaying] 降级为**日志字段**（下次诊断包据此判断状态是否可信）。
      */
     private fun handleCarPowerSignal(action: String) {
         if (!isCarPowerOffPauseEnabled(this)) {
@@ -2555,13 +2582,17 @@ class AudioPlaybackService : Service() {
             return
         }
         val command = CarPowerSignal.commandFor(action, enabled = true) ?: return
-        if (!isNowPlaying) {
-            RingLog.i("CarPower", "signal ignored (not playing): action=$action")
-            CarPowerLogFile.write(this, "signal ignored (not playing): action=$action")
-            return
+        // playing/since 只是日志字段，不参与决策：`since` 为 -1 表示本次进程内通知链
+        // 从未写过 isNowPlaying（该值无意义），否则是它距今多少秒——数值大即说明
+        // 通知链已停摆，历史版本的 `if (!isNowPlaying) return` 正是在这种状态下丢信号。
+        val since = if (isNowPlayingUpdatedAt > 0L) {
+            (SystemClock.elapsedRealtime() - isNowPlayingUpdatedAt) / 1000L
+        } else {
+            -1L
         }
-        RingLog.i("CarPower", "power-down -> dispatch $command (action=$action)")
-        CarPowerLogFile.write(this, "power-down -> dispatch $command (action=$action)")
+        val detail = "action=$action, playing=$isNowPlaying, since=${since}s"
+        RingLog.i("CarPower", "power-down -> dispatch $command ($detail)")
+        CarPowerLogFile.write(this, "power-down -> dispatch $command ($detail)")
         // 复用线控同一条 Dart 派发链：Dart 侧 pause 会同步通知、媒体会话与播放状态，
         // 直接在原生层 pause 播放器会造成「通知栏还在播 / 进度条不动」的状态撕裂。
         handleMediaButtonCommand(command)
@@ -2590,36 +2621,13 @@ class AudioPlaybackService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = getSystemService(NotificationManager::class.java)
-            
-            // 删除旧渠道（如果存在且配置不正确）- Android 8+ 渠道一旦创建无法修改，必须删除重建
+
+            // 彻底移除旧「音乐播放」渠道：它曾发「准备播放」占位通知，与保活通知
+            // 并存导致通知栏残留（issue #245）。删除渠道会连带清除该渠道下已发布
+            // 的通知，升级安装后旧残留一并消失；新占位已改用 KEEPALIVE_CHANNEL_ID。
             try {
-                val existingChannel = manager.getNotificationChannel(CHANNEL_ID)
-                if (existingChannel != null) {
-                    // 阶段6：重要度改为 MIN（保活通知彻底隐藏/最小化），旧渠道需删除重建
-                    if (existingChannel.importance != NotificationManager.IMPORTANCE_MIN ||
-                        existingChannel.sound != null) {
-                        manager.deleteNotificationChannel(CHANNEL_ID)
-                    }
-                }
+                manager.deleteNotificationChannel("md3music_audio_playback")
             } catch (_: Exception) {}
-            
-            // 创建静音通知渠道 - 修复荣耀/vivo 手机通知提示音问题
-            // 阶段7：IMPORTANCE_MIN + 常驻 startForeground（不 DETACH），保活通知只出现在
-            // 折叠的「其他通知」区（或 DETACH 已移除的旧行为不再使用），不产生打扰；
-            // 渠道静音（setSound null）避免部分 ROM 通知「叮咚响」。
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "音乐播放",
-                NotificationManager.IMPORTANCE_MIN
-            ).apply {
-                description = "音乐播放控制（静默保活）"
-                setShowBadge(false)
-                lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
-                // 关键修复：禁用声音和震动
-                setSound(null, null)
-                enableVibration(false)
-            }
-            manager.createNotificationChannel(channel)
 
             // 保活通知专用频道：最低重要度静默显示；用户可长按通知进入系统设置关闭。
             try {
@@ -2883,8 +2891,11 @@ class AudioPlaybackService : Service() {
         } else {
             stopVivoAtomicTimer()
         }
-        // 同步「正在播放」状态，供锁屏歌词广播（ACTION_SCREEN_OFF）判断
+        // 同步「正在播放」状态，供锁屏歌词广播（ACTION_SCREEN_OFF）判断。
+        // 同时记下写入时刻：该值是否可信由「距今多久」决定，日志里一并输出
+        // （见 handleCarPowerSignal 的 `since=Ns`）。
         isNowPlaying = isPlaying
+        isNowPlayingUpdatedAt = SystemClock.elapsedRealtime()
         lastDesktopLyricEnabled = desktopLyricEnabled
         lastIsFavorited = isFavorited
         lastDuration = duration

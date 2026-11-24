@@ -299,11 +299,14 @@ class _SmartArtworkImageState extends State<SmartArtworkImage> {
   }
 
   Widget _placeholder(ColorScheme colorScheme) {
+    // 无封面占位跟随主题莫奈色：与 LocalArtworkImage 的占位同口径——
+    // 底色 primaryContainer、音符 primary，避免本地音乐列表一整列灰格子
+    // 在开莫奈取色后不跟主题（smart 路径为在线失败/云盘无封面的兜底）。
     return Container(
       width: widget.size,
       height: widget.size,
       decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest,
+        color: colorScheme.primaryContainer,
         borderRadius: BorderRadius.circular(widget.borderRadius),
       ),
       child: Icon(
@@ -312,7 +315,7 @@ class _SmartArtworkImageState extends State<SmartArtworkImage> {
         // 非有限字号会在 TextPainter 布局断言（`fontSize.isFinite`）。与上面
         // loadingBuilder 的 isFill 分支取同一档 40。
         size: widget.size.isFinite ? widget.size * 0.4 : 40,
-        color: colorScheme.onSurfaceVariant,
+        color: colorScheme.primary,
       ),
     );
   }

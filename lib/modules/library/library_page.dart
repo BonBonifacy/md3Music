@@ -235,16 +235,59 @@ class _LibraryPageState extends State<LibraryPage>
           children: [
             if (isScanning && hasMusic) ...[
               const M3ELinearWavyProgressIndicator(),
-              const Padding(
-                padding: EdgeInsets.all(AppSpacing.sm),
-                child: Text('正在扫描本地音乐...'),
+              Padding(
+                // 横幅横向对齐页面内容基线（lg）；原来 all(sm) 让它比标题、
+                // TabBar、卡片整体左缩进 8dp，是这一页最显眼的内边距不齐。
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.lg,
+                  vertical: AppSpacing.sm,
+                ),
+                child: Text(
+                  '正在扫描本地音乐...',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
               ),
             ],
             if (libraryProvider.error != null)
               Padding(
-                padding: const EdgeInsets.all(AppSpacing.sm),
-                child: Text('扫描失败：${libraryProvider.error}',
-                    style: TextStyle(color: colorScheme.error)),
+                // 错误态：从「一行红字」升级为带图标与容器的提示条。
+                // 只换视觉，不新增重试按钮（重试入口仍由 FAB / 菜单提供），
+                // 避免在视觉改版里引入新的交互路径。
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.lg,
+                  vertical: AppSpacing.sm,
+                ),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.md,
+                    vertical: AppSpacing.sm,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colorScheme.errorContainer,
+                    borderRadius: AppRadius.mdAll,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: AppCapsule.cellIcon,
+                        color: colorScheme.onErrorContainer,
+                      ),
+                      const Gap(AppSpacing.sm),
+                      Expanded(
+                        child: Text(
+                          '扫描失败：${libraryProvider.error}',
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: colorScheme.onErrorContainer,
+                                  ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             Expanded(child: isScanning && !hasMusic
             ? _buildScanningState(colorScheme)

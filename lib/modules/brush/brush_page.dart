@@ -5,6 +5,9 @@ import 'package:provider/provider.dart';
 import 'package:m3e_core/m3e_core.dart';
 import '../../widgets/md3_pull_to_refresh.dart';
 
+import '../../core/build_flags.dart';
+import '../../core/fx/waves/distortion_wave.dart';
+import '../../core/services/windows_fullscreen.dart';
 import '../../core/remote/tv_card_focus.dart';
 import '../../core/remote/tv_scroll_region.dart';
 
@@ -52,10 +55,15 @@ class _BrushPageState extends State<BrushPage> {
   int _nextPage = 1;
   final ScrollController _scrollController = ScrollController();
 
+  /// 右上角「竖屏模式」按钮：过场波的出发点要量它的屏幕位置。
+  final GlobalKey _verticalButtonKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+    // 先把过场波的着色器编译好：第一道波不该退成淡入淡出。
+    DistortionWave.precache();
     _load();
   }
 
@@ -169,16 +177,42 @@ class _BrushPageState extends State<BrushPage> {
   }
 
   /// 打开竖屏视频流，复用当前已加载的卡片。
+  ///
+  /// 过场用「扭曲波」：从右上角这个按钮扩散出去，把整页带进来（core/fx/waves/）。
+  /// 竖屏流里全是视频，所以新页实时画、不每帧快照（`revealedLive`）。
+  /// TV 构建留原来的普通路由：遥控端不需要这段两秒多的全屏着色器。
   void _openVertical() {
     if (_cards.isEmpty) return;
-    Navigator.of(context, rootNavigator: true).push(
-      MaterialPageRoute(
-        builder: (_) => BrushVerticalPage(
-          cards: List.of(_cards),
-          fetchMore: _loadMoreForVertical,
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final page = BrushVerticalPage(
+      cards: List.of(_cards),
+      fetchMore: _loadMoreForVertical,
+    );
+    if (kTvBuild) {
+      navigator.push(MaterialPageRoute<void>(builder: (_) => page));
+      return;
+    }
+    navigator.push(
+      DistortionWaveRoute<void>(
+        settings: const RouteSettings(name: 'brush/vertical'),
+        style: WindowsFullscreen.waveStyleForWindow(
+          context,
+          DistortionWaveStyle.screenCenter,
+          // 刷刷不切窗口形态：按当前窗口状态取圆角。
+          windowWillBeFullscreen: WindowsFullscreen.active.value,
         ),
+        source: _verticalButtonRect(),
+        revealedLive: true,
+        builder: (_) => page,
       ),
     );
+  }
+
+  /// 右上角按钮此刻在屏幕上的位置，给波当出发点；量不到就交给类型默认值。
+  Rect? _verticalButtonRect() {
+    final box = _verticalButtonKey.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
   }
 
   /// 从 startPage 起连续请求若干批，按歌名去重，直到凑够 minCount 或达到 maxPages 次。
@@ -390,6 +424,7 @@ class _BrushPageState extends State<BrushPage> {
         scrollController: _scrollController,
         actions: [
           IconButton(
+            key: _verticalButtonKey,
             onPressed: _openVertical,
             tooltip: '竖屏模式',
             icon: const Icon(Icons.smartphone),

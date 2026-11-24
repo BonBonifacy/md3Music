@@ -24,11 +24,16 @@ void main() {
       expect(LyricLayout.auxSubHeight(fontSize, -1), 0);
     });
 
-    test('单行副行高度 = 副行行高 + 0.3em 间隙（与旧口径一致）', () {
+    test('单行副行高度 = 副行行高 + 上方0.3em间隙 + 下方0.3em呼吸余量', () {
       final double trans = LyricLayout.translationFontSize(fontSize);
+      // 上方间隙（贴主行）+ 下方呼吸余量（防底边顶到下一行顶部）；
+      // 无下方余量时副行底边与下一行顶部恒重合（代数恒等），视觉成「压行」。
       expect(
         LyricLayout.auxSubHeight(fontSize, 1),
-        closeTo(trans * LyricLayout.translationLineHeight + trans * 0.3, 0.0001),
+        closeTo(
+          trans * LyricLayout.translationLineHeight + trans * 0.6,
+          0.0001,
+        ),
       );
     });
 

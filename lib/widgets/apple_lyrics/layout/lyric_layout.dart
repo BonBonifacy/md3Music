@@ -2,9 +2,10 @@ import 'dart:math' as math;
 
 import 'package:flutter/widgets.dart';
 
+import 'package:md3music/core/services/windows_default_font.dart';
+import 'package:md3music/core/utils/lyric_wrap_plan.dart';
 import 'package:md3music/widgets/apple_lyrics/models/lyric_line.dart';
 import 'lyric_preferences.dart';
-import 'package:md3music/core/utils/lyric_wrap_plan.dart';
 
 /// Apple Music 风格歌词布局常量
 ///
@@ -65,16 +66,23 @@ class LyricLayout {
   ///
   /// 所有歌词渲染/测量路径的 [TextStyle] 必须显式传入此值，否则
   /// TextPainter + Canvas 直接绘制路径不会继承 [ThemeData.fontFamily]。
-  /// - null：Flutter 走系统字体链（Android 默认 Roboto + Noto Sans CJK）
+  /// - null：非 Windows 走系统字体链（Android 默认 Roboto + Noto Sans CJK）
+  /// - 内置族名（MD3MusicSans）：Windows 上的 system 档用便携包内嵌字体
   /// - 'LyricUserCustomFont'：用户通过 SAF 选择并加载的自定义字体
-  /// （内置 SimHei 已移除；bundled 为废弃遗留值，行为等同 null）
+  /// （bundled 为废弃遗留值，行为等同 system；非 Windows 恒走系统字体链）
   static String? get fontFamily => LyricPreferences.instance.effectiveFontFamily;
 
   /// 歌词字重：返回用户偏好的字重。
   ///
   /// 所有歌词渲染/测量路径的 [TextStyle] 必须显式传入此值，
   /// 否则 TextPainter + Canvas 直接绘制路径不会继承 `TextStyle.fontWeight`。
-  static FontWeight get fontWeight => LyricPreferences.instance.fontWeight;
+  /// 歌词字重：Windows 使用内置字体（单档 Medium 500）时，请求字重高于 500
+  /// 一律回落到 500，避免假粗体合成导致的笔画发糊（见
+  /// [WindowsDefaultFont.bundledAwareFontWeight]）。其余平台/自定义字体不受影响。
+  static FontWeight get fontWeight =>
+      WindowsDefaultFont.bundledAwareFontWeight(
+        LyricPreferences.instance.fontWeight,
+      );
 
   // ============== 行 wrapper 间距 ==============
 
@@ -236,8 +244,12 @@ class LyricLayout {
 
   /// 副行（翻译/罗马音）占用的垂直高度。
   ///
-  /// 公式：`rows × transFontSize × translationLineHeight + transFontSize × 0.3`，
-  /// 其中 0.3em 为副行与主行之间的间隙（与 renderer 绘制位置一致）。
+  /// 公式：`rows × transFontSize × translationLineHeight + 0.3em + 0.3em`，
+  /// 其中 0.3em 为副行与主行之间的间隙（与 renderer 绘制位置一致），
+  /// 另一份 0.3em 为副行与下一行歌词之间的**呼吸余量**。
+  ///
+  /// 没有这份额外余量时，副行底边会严丝合缝地顶到下一行顶部（数学恒等），
+  /// 再叠加字形降部（英文 g/j/p 等）的下探，视觉即成「副行压住下一行」。
   ///
   /// [rows] 为该副行在可用宽度内的**实际视觉行数**（过长换行时 > 1）；
   /// `rows <= 0` 表示无副行，返回 0。
@@ -249,7 +261,9 @@ class LyricLayout {
   static double auxSubHeight(double fontSize, int rows) {
     if (rows <= 0) return 0;
     final trans = translationFontSize(fontSize);
-    return rows * trans * translationLineHeight + trans * 0.3;
+    return rows * trans * translationLineHeight +
+        // 上方 0.3em（与 renderer 绘制间隙一致）+ 下方 0.3em（呼吸余量）
+        trans * (0.3 + 0.3);
   }
 
   /// 副行与主行之间的形变间隙（0.3em 副行字号），与 [auxSubHeight] 同口径。
@@ -382,8 +396,8 @@ class LyricLayout {
   ///   出场取副行**顶边**（`transY`）向上翻走。
   ///
   /// [sublineHeight] 传副行 `TextPainter.height`（= 视觉行数 × 副行字号 ×
-  /// [translationLineHeight]），不要传 [auxSubHeight]：后者含底部的 0.3em 间隙，
-  /// 会让入场锚线下移 0.3em 而与文字底边错位。
+  /// [translationLineHeight]），不要传 [auxSubHeight]：后者含下方的 0.3em
+  /// 呼吸余量，传它会让入场锚线整体下移一截而与文字底边错位。
   /// [sublineWidth] 传副行 `TextPainter.width`。
   static Offset sublineFlipAnchor({
     required double transX,

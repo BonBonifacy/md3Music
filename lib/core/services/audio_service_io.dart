@@ -2,6 +2,7 @@ import 'dart:async';
 import 'music_haptics_service.dart';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -672,8 +673,7 @@ class AudioService {
     // 一次性拉到 _userVolume —— 听感正是「切歌时音量突然变大」。
     // 这条日志是坐实/排除该路径的唯一判据（abort 自身只打 crossed=…，看不出触发原因）。
     if (_crossfading) {
-      // ignore: avoid_print
-      print('[VolAudit] 淡化中收到焦点变化 focusChange=$focusChange '
+      debugPrint('[VolAudit] 淡化中收到焦点变化 focusChange=$focusChange '
           'mode=${_interruptionMode.name} playing=${_activePlayer.playing}');
     }
     if (_interruptionMode == AudioFocusInterruptionMode.keepPlaying) {
@@ -682,12 +682,14 @@ class AudioService {
       // native 对 LOSS 正常走 Media3 DO_NOT_PLAY；此处同步 Dart 状态并留痕，
       // 确认独占中断事件是否可达（小米可能直接 interrupt AudioTrack 不派发事件）。
       if (focusChange == -1) {
-        // ignore: avoid_print
-        print(
+        debugPrint(
           '[AudioFocus] keepPlaying LOSS, playing=${_activePlayer.playing}',
         );
         abortCrossfade();
         if (_activePlayer.playing) {
+          // 实测「起播后 1~2 秒自动转 paused 且无 action.pause」需要这条留痕才能
+          // 归因（DiagnosticLogger 只重定向 debugPrint，print 不进 app.log）。
+          debugPrint('[AudioFocus] pause by focus LOSS (mode=keepPlaying)');
           // ignore: discarded_futures
           _activePlayer.pause();
         }
@@ -699,6 +701,10 @@ class AudioService {
         abortCrossfade();
         if (_activePlayer.playing) {
           _pausedByInterruption = true;
+          debugPrint(
+            '[AudioFocus] pause by focusChange=$focusChange '
+            '(mode=pauseAndResume)',
+          );
           // ignore: discarded_futures
           _activePlayer.pause();
         }

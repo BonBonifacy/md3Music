@@ -312,6 +312,20 @@ class SettingsRepository {
     await prefs.setBool(playlistCoverTransitionEnabledPreferenceKey, enabled);
   }
 
+  /// 歌单详情页 A-Z 拖动索引条开关（右侧字母快速滚动条）。默认关闭。
+  static const String playlistAlphabetIndexBarEnabledPreferenceKey =
+      'settings_playlist_alphabet_index_bar_enabled';
+
+  Future<bool> getPlaylistAlphabetIndexBarEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(playlistAlphabetIndexBarEnabledPreferenceKey) ?? false;
+  }
+
+  Future<void> setPlaylistAlphabetIndexBarEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(playlistAlphabetIndexBarEnabledPreferenceKey, enabled);
+  }
+
   /// 悬浮播放器的进度指示开关。默认开启（未设置时返回 true）。
   static const String secondaryPlayerProgressPreferenceKey =
       'settings_secondary_player_progress';
@@ -377,6 +391,24 @@ class SettingsRepository {
   Future<void> setHideNavBarOnSecondaryPages(bool enabled) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(hideNavBarOnSecondaryPreferenceKey, enabled);
+  }
+
+  /// 主界面纵向滚动时底部导航栏是否**跟手收起**。**默认 false（关闭）**。
+  ///
+  /// 只管竖屏底部 NavigationBar：横屏侧边 rail / 桌面外壳 / TV 顶栏都不参与。
+  /// 与 [hideNavBarOnSecondaryPreferenceKey] 那套转场收起相互独立（见
+  /// `kNavBarScrollCollapseEnabled` 的说明）。
+  static const String navBarScrollCollapsePreferenceKey =
+      'settings_navbar_scroll_collapse';
+
+  Future<bool> getNavBarScrollCollapseEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(navBarScrollCollapsePreferenceKey) ?? false;
+  }
+
+  Future<void> setNavBarScrollCollapseEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(navBarScrollCollapsePreferenceKey, enabled);
   }
 
   /// 悬浮播放器折叠态停靠位（'left' | 'center' | 'right'）。

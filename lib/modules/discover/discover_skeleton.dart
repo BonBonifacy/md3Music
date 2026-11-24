@@ -62,8 +62,10 @@ class DiscoverSectionFadeSwap extends StatelessWidget {
                   // 用 48dp 空位顶住 trailing「›」（真实内容里是 IconButton）
                   // ——否则骨架标题行比内容矮一截，淡入时整块上下跳。
                   Padding(
+                    // top 必须与 _SectionBlock 标题行一致（xl）：骨架与真实内容
+                    // 走 AnimatedSwitcher 交叉淡入，两边若差 12dp，替换瞬间整块下跳。
                     padding: const EdgeInsets.fromLTRB(
-                      AppSpacing.lg, AppSpacing.md, AppSpacing.lg, AppSpacing.sm,
+                      AppSpacing.lg, AppSpacing.xl, AppSpacing.lg, AppSpacing.sm,
                     ),
                     child: Row(
                       children: [
@@ -147,25 +149,39 @@ class DiscoverSongRowsSkeleton extends StatelessWidget {
 
 /// 2 列「专辑格」骨架（新碟上架区块用）。
 class DiscoverAlbumGridSkeleton extends StatelessWidget {
-  const DiscoverAlbumGridSkeleton({super.key, this.cells = 4});
+  const DiscoverAlbumGridSkeleton({super.key, this.cells = 4, this.columns = 1});
 
   final int cells;
+
+  /// 每行格子数，**必须与实际内容一致**。
+  ///
+  /// 发现页「新碟上架」的内容是 CompactAlbumGrid(columns: 1)，骨架若仍按
+  /// 每行 2 格画，加载态是两行、内容就绪后变四行 —— 交叉淡入的瞬间高度跳变。
+  /// 默认 1 与发现页的现状对齐；其它调用点需要两列时显式传 2。
+  final int columns;
 
   @override
   Widget build(BuildContext context) {
     final rows = <Widget>[];
-    for (var i = 0; i < cells; i += 2) {
+    final perRow = columns < 1 ? 1 : columns;
+    for (var i = 0; i < cells; i += perRow) {
+      final rowCells = <Widget>[];
+      for (var j = 0; j < perRow; j++) {
+        final idx = i + j;
+        if (j > 0) rowCells.add(const Gap(AppSpacing.md));
+        rowCells.add(
+          Expanded(
+            child: idx < cells ? _cell(idx) : const SizedBox.shrink(),
+          ),
+        );
+      }
       rows.add(
         Padding(
           padding: const EdgeInsets.fromLTRB(
               AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.sm),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: _cell(i)),
-              const Gap(AppSpacing.md),
-              Expanded(child: i + 1 < cells ? _cell(i + 1) : const SizedBox.shrink()),
-            ],
+            children: rowCells,
           ),
         ),
       );
@@ -185,7 +201,9 @@ class DiscoverAlbumGridSkeleton extends StatelessWidget {
           children: [
             const ShimmerLoading(
                 width: 52, height: 52, radius: 8, diagonal: true),
-            const Gap(10),
+            // 与 CompactAlbumGrid 内容侧的 Gap(AppSpacing.md) 同值，
+            // 否则骨架与内容切换时缩略图到文字的距离会变。
+            const Gap(AppSpacing.md),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

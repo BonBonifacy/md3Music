@@ -180,7 +180,7 @@ class ThemeProvider extends ChangeNotifier {
   }
 
   /// 当前生效的 fontFamily（传给 AppTheme）：
-  /// - [FontSource.system]：Windows 优先内置思源黑体，其他平台走系统字体链
+  /// - [FontSource.system]：Windows 优先内置 MD3MusicSans 字体，其他平台走系统字体链
   /// - [FontSource.bundled]：旧值等同 system（旧内置 SimHei 已移除）
   /// - [FontSource.custom]：返回 [_loadedCustomFontFamily]，
   ///   加载失败时降级为对应平台默认字体
@@ -328,14 +328,21 @@ class ThemeProvider extends ChangeNotifier {
   }
 
   /// 切换「使用系统主题色」开关。
+  ///
+  /// 与「封面动态取色」互斥：开启其中一个自动关闭另一个（取色来源只能有一个，
+  /// 两者同时开时用户无法从界面判断当前生效的是哪个）。持久化两处同步写入。
   Future<void> setUseDynamicColor(bool enabled) async {
-    if (_useDynamicColor == enabled) return;
+    if (_useDynamicColor == enabled && (!enabled || !_useCoverSeedColor)) return;
+    final prefs = await SharedPreferences.getInstance();
     _useDynamicColor = enabled;
+    if (enabled && _useCoverSeedColor) {
+      _useCoverSeedColor = false;
+      await prefs.setBool(_coverDynamicKey, false);
+    }
     if (enabled) {
       await _loadSystemColor();
     }
     notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_dynamicKey, enabled);
   }
 
@@ -348,14 +355,18 @@ class ThemeProvider extends ChangeNotifier {
 
   /// 切换「封面动态取色」开关。
   ///
-  /// 与「使用系统主题色」相互独立、可叠加；都开启时封面取色优先
-  /// （见 [effectiveSeedColor]）。关闭时不立即清空 [_coverSeedColor]，
-  /// 由优先级链天然忽略；切歌桥接仍会持续更新缓存色。
+  /// 与「使用系统主题色」互斥（见 [setUseDynamicColor]）：开启本项自动关闭
+  /// 系统主题色；关闭时不立即清空 [_coverSeedColor]，由优先级链天然忽略，
+  /// 切歌桥接仍会持续更新缓存色。
   Future<void> setUseCoverSeedColor(bool enabled) async {
-    if (_useCoverSeedColor == enabled) return;
-    _useCoverSeedColor = enabled;
-    notifyListeners();
+    if (_useCoverSeedColor == enabled && (!enabled || !_useDynamicColor)) return;
     final prefs = await SharedPreferences.getInstance();
+    _useCoverSeedColor = enabled;
+    if (enabled && _useDynamicColor) {
+      _useDynamicColor = false;
+      await prefs.setBool(_dynamicKey, false);
+    }
+    notifyListeners();
     await prefs.setBool(_coverDynamicKey, enabled);
   }
 

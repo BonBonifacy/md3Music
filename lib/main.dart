@@ -313,6 +313,13 @@ Future<(bool, bool, bool, ThemeMode?)> runBootstrap() async {
     kHideNavBarOnSecondaryPages.value =
         prefs.getBool(SettingsRepository.hideNavBarOnSecondaryPreferenceKey) ??
             true;
+    // 主界面滚动时底栏跟手收起：默认关。首帧前播种，避免开关打开的用户
+    // 冷启动后先按「关」渲染、再异步载入后跳一下。
+    kNavBarScrollCollapseEnabled.value =
+        prefs.getBool(
+              SettingsRepository.navBarScrollCollapsePreferenceKey,
+            ) ??
+            false;
     // 桌面外壳开关：不播种则首帧是手机导航壳、app.dart 异步载入后整树跳成
     // 侧栏（M5）。默认 false，与 SettingsRepository.getDesktopModeEnabled 及
     // kDesktopModeEnabled 初值三处一致。

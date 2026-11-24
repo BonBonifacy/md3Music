@@ -3,6 +3,7 @@ package com.md3music.md3music
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.SystemClock
 
 /**
  * 「划掉后台自动退出」策略（2026-11-12 三星/类原生适配专项）。
@@ -42,9 +43,49 @@ object SwipeExitPolicy {
         true
     }
 
-    /** 划掉任务时是否执行"停播 + 退进程"：开关开启 && 非 TV（所有手机）。 */
+    /**
+     * 划掉任务时是否执行"停播 + 退进程"：开关开启 && 非 TV && 非系统触发的隐藏任务清理。
+     *
+     * 系统会在 App 全部任务不可见（如锁屏歌词层收走后主任务被移除）时**自行清理
+     * hidden 任务**，该移除不是用户划掉后台。若误判为划掉，会把正在播放的进程当场
+     * 杀掉——三星平板实测（2026-11-23）：息屏拉起锁屏歌词 → 指纹解锁 → 锁屏层销毁
+     * 后 80ms 内主任务被 `remove-hidden-task` 移除 → [TaskRemovalService] 被停
+     * → executeExit 自杀式退出，用户看到"App 闪退"。
+     */
     fun shouldSwipeExit(context: Context): Boolean =
-        isSwitchEnabled(context) && !isTv(context)
+        isSwitchEnabled(context) && !isTv(context) && !systemTaskRemovalFromLockLayer()
+
+    /// 锁屏歌词层结束后的判定窗口（ms）：窗口内到达的**所有**任务移除事件一律视为系统清理。
+    ///
+    /// 一次解锁会把移除事件连续投递到多条入口（TaskRemovalService 销毁 +
+    /// AudioPlaybackService.onTaskRemoved），与锁屏层 onStop 的实测间隔约
+    /// 80~370ms；取 1000ms 以覆盖两条入口的投递间隔余量。窗口内不做「命中即清」：
+    /// 多条入口共享同一窗口，任一条漏网都会造成进程退出。
+    private const val LOCK_TASK_REMOVE_GUARD_MS = 1_000L
+
+    /// 锁屏层结束时刻（elapsedRealtime）。由 [LockScreenLyricActivity.onStop] 登记；
+    /// onStop 可能被多次调用（熄屏瞬间拉起后立即不可见、解锁时再收层），每次刷新窗口。
+    @Volatile
+    private var lockLayerEndedElapsedMs = 0L
+
+    /// 锁屏层结束时登记窗口起点。正常解锁走 onStop，无需调用方关心返回值。
+    fun markLockLayerEnded(nowElapsedMs: Long = SystemClock.elapsedRealtime()) {
+        lockLayerEndedElapsedMs = nowElapsedMs
+    }
+
+    /**
+     * 本次任务移除是否由系统在锁屏层结束的清理流程中触发。
+     *
+     * 窗口内不消费：解锁事件会连续触发多条入口的移除（见
+     * [LOCK_TASK_REMOVE_GUARD_MS] 上方注释），任一条漏网都会造成进程退出，
+     * 故整段拦截；窗口过期或下次锁屏层结束重新登记前按正常划掉处理。
+     */
+    internal fun systemTaskRemovalFromLockLayer(
+        nowElapsedMs: Long = SystemClock.elapsedRealtime(),
+    ): Boolean {
+        val endedAt = lockLayerEndedElapsedMs
+        return endedAt != 0L && nowElapsedMs in endedAt until (endedAt + LOCK_TASK_REMOVE_GUARD_MS)
+    }
 
     /**
      * 启动系统任务移除监听。服务本身始终运行，开关在销毁时现读，

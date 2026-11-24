@@ -164,6 +164,8 @@ class AppLayout {
   /// 正文文本的舒适阅读宽度上限（歌词、长段描述），约 60–75 字符行长。
   static const double readableMaxWidth = 640;
 
+
+
   /// 网格每列的目标宽度（配合 [gridColumnsForWidth]）。
   static const double gridTargetExtent = 200;
 

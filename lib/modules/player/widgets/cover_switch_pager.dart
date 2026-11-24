@@ -76,6 +76,13 @@ class CoverSwitchPagerState extends State<CoverSwitchPager>
   CoverSwitchIntent? _pendingIntent;
   Timer? _pendingGuard;
 
+  /// 本次拖动累计的原始横向位移（px，右移为正）。
+  ///
+  /// 边界尝试的判据必须用原始位移：橡皮筋会把越界位移重压到 0.35 页内，
+  /// 用压后的 progress 设阈值（如 0.12 页）等于要求鼠标拖过百像素，
+  /// 正常幅度的滑动切歌全都够不到。
+  double _dragDx = 0;
+
   double get _pitch => widget.side + _gap;
 
   double get _minProgress => widget.canGoPrevious ? -1 : 0;
@@ -218,9 +225,11 @@ class CoverSwitchPagerState extends State<CoverSwitchPager>
     widget.onDragStarted?.call();
     _motion.stop();
     _dragging = true;
+    _dragDx = 0;
   }
 
   void _onDragUpdate(DragUpdateDetails details) {
+    _dragDx += details.delta.dx;
     _motion.value = coverDragProgress(
       progress: _motion.value,
       dx: details.delta.dx,
@@ -244,10 +253,28 @@ class CoverSwitchPagerState extends State<CoverSwitchPager>
     );
     final CoverSwitchIntent? intent = coverSwitchIntentForTarget(target);
     if (intent == null) {
+      // 到头了也上报一次提交意图：橡皮筋负责把画面弹回，调用方经 onCommit
+      // 复用按钮路径的「已经是最后一首了」Toast（provider 里已有，勿重复实现）。
+      final boundaryIntent = _boundaryAttemptIntent(_dragDx);
+      if (boundaryIntent != null) widget.onCommit(boundaryIntent);
       _settleTo(target, velocityPxPerSec: velocityPxPerSec);
       return;
     }
     _commit(intent, target, velocityPxPerSec: velocityPxPerSec);
+  }
+
+  /// 边界处「明确想翻却翻不动」的手势意图；两侧都可翻或无朝外位移则返回 null。
+  ///
+  /// [dragDx] 是本次拖动的原始净位移（右正左负）。这里刻意**不设像素阈值**：
+  /// `_onDragEnd` 被触发本身就意味着手势系统已越过 touch slop、认定为一次
+  /// 水平拖动，再叠阈值（40px/104px）会把正常幅度的滑动全吞掉 —— 真机实测
+  /// 「轻滑无提示、大力才有」即由此而来。只要净位移朝不可翻的一侧，就上报。
+  CoverSwitchIntent? _boundaryAttemptIntent(double dragDx) {
+    if (!widget.canGoNext && dragDx < 0) return CoverSwitchIntent.next;
+    if (!widget.canGoPrevious && dragDx > 0) {
+      return CoverSwitchIntent.previous;
+    }
+    return null;
   }
 
   void _onDragCancel() {

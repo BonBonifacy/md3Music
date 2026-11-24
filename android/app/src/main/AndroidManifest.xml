@@ -39,6 +39,7 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
+        android:requestLegacyExternalStorage="true"
         android:enableOnBackInvokedCallback="true"
         android:networkSecurityConfig="@xml/network_security_config">
         <!-- MD3Music fork: 原子随身听（vivomusicmix）合作应用认证 meta-data（照抄酷我 12.0.8.0）。

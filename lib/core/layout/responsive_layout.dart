@@ -1,4 +1,5 @@
 import 'package:dpad/dpad.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/rendering.dart' show RenderProxyBox;
 import 'package:material_ui/material_ui.dart';
 import 'package:m3e_core/m3e_core.dart';
@@ -33,6 +34,14 @@ const double twoPaneBreakpoint = 1000;
 /// 因此用 AnimationController 合规；而展开播放页时跟着手指走的那部分挂在既有
 /// `playerExpansion` 帧源上（见 `BottomChromeSink`），不新增 Ticker / Timer。
 const Duration kBottomChromeToggleDuration = Duration(milliseconds: 260);
+
+/// 滚动跟手收起的**松手吸附**时长。
+///
+/// 只有「手指松开 → 落到最近端点」这一段走这条动画；拖动期间由手指 1:1 推进，
+/// 不经过任何时长。取 180ms（比 260ms 的转场收起短）：吸附的位移通常只剩几十 dp，
+/// 再用转场那档时长会读成「手都松了底栏还在慢慢爬」。曲线仍复用底栏组的
+/// `chromeSinkEasing` / `chromeRiseEasing`，收展语汇与转场一致。
+const Duration kScrollCollapseSettleDuration = Duration(milliseconds: 180);
 
 /// 所有窗口形态按局部可用宽度求值，独立于桌面布局开关。
 bool usesNavigationRail(double width) => width >= compactBreakpoint;
@@ -271,6 +280,71 @@ enum BarFormFlipCause {
 final ValueNotifier<bool> kHideNavBarOnSecondaryPages =
     ValueNotifier<bool>(true);
 
+/// 主界面纵向滚动时是否让**底部导航栏跟手收起**（**默认 false = 关闭**）。
+///
+/// 开启后的行为：手指向上滑（内容向上滚、`scrollDelta > 0`）时底栏按位移距离
+/// **线性**收起，手指向下滑时按同一比例展开；松手/惯性结束时吸附到最近端点
+/// （<50% 复位、≥50% 收起、停在列表顶端恒复位）。**1:1 跟手是本开关的核心**
+/// —— 拖动期间直接按 `位移 / 底栏槽位高` 推进进度，不做阈值触发、不插缓动，
+/// 否则手指与底栏会脱节（详见 [ResponsiveScaffold] 的 `_applyScrollDelta`）。
+///
+/// 只管**竖屏底部 NavigationBar**：横屏侧边 NavigationRail、桌面外壳、TV 顶栏
+/// 都不在本机制内（监听器只挂在 compact 分支的 body 上）。
+///
+/// 与 [kHideNavBarOnSecondaryPages] 那套**转场**收起相互独立：两者逐帧取较大值
+/// 作为底栏的实际收起进度（见 [_ChromeCollapseProgress]），进二级页时转场收起
+/// 优先、返回时滚动收起已复位，两条链路不会互相抵消。
+final ValueNotifier<bool> kNavBarScrollCollapseEnabled =
+    ValueNotifier<bool>(false);
+
+/// 把「路由转场收起」与「滚动跟手收起」合成一条逐帧收起进度：**逐帧取较大值**。
+///
+/// 两位写入者互不覆盖 —— 任一方向在位就按它的进度渲染底栏，于是
+/// 「二级页收起」与「上滑收起」可以同时成立而不会有一方把另一方顶回去。
+/// 状态语义在这里没有消费方（消费方只读 [value]，按 spring-anchor 用法），
+/// 故 [status] 恒报 [AnimationStatus.forward]，与
+/// `Animation.fromValueListenable` 的同一取舍。
+class _ChromeCollapseProgress extends Animation<double> {
+  _ChromeCollapseProgress(this._route, this._scroll)
+      : _merged = Listenable.merge(<Listenable>[_route, _scroll]);
+
+  /// 路由转场收起（已套 `chromeSinkEasing` / `chromeRiseEasing`）。
+  final ValueListenable<double> _route;
+
+  /// 滚动跟手收起（**线性**，不加缓动：跟手期间进度必须与手指位移同比例）。
+  ///
+  /// 类型是 [ValueListenable] 而不是 [Animation]：这一位由
+  /// [ScrollUpdateNotification] 直接写入（见 `_applyScrollDelta`），没有
+  /// 状态机也不需要 `status`。
+  final ValueListenable<double> _scroll;
+
+  final Listenable _merged;
+
+  @override
+  void addListener(VoidCallback listener) => _merged.addListener(listener);
+
+  @override
+  void removeListener(VoidCallback listener) =>
+      _merged.removeListener(listener);
+
+  @override
+  void addStatusListener(AnimationStatusListener listener) {
+    // 恒定状态，无需回调。
+  }
+
+  @override
+  void removeStatusListener(AnimationStatusListener listener) {
+    // 恒定状态，无需回调。
+  }
+
+  @override
+  AnimationStatus get status => AnimationStatus.forward;
+
+  @override
+  double get value =>
+      _scroll.value > _route.value ? _scroll.value : _route.value;
+}
+
 /// 当前 tab 的中央栈顶停着「不保留播放栏」的二级路由页（二级路由形态的设置页，
 /// 经 `lib/app.dart` `_pageForTabAsRoute` 的 `ResidentBarSuppressor` 包装）。
 ///
@@ -393,6 +467,28 @@ class ResponsiveScaffold extends StatefulWidget {
   /// 侧栏不受「二级页面隐藏菜单底栏」开关影响。
   final bool? hideRailNavigation;
 
+  /// 主界面纵向滚动时是否让底部 NavigationBar **跟手收起**（默认 false）。
+  ///
+  /// 由主布局按全局开关 [kNavBarScrollCollapseEnabled] 传入；紧凑竖屏分支专用，
+  /// 横屏 rail / TV 构建不参与（见 [_ResponsiveScaffoldState._scrollCollapseActive]）。
+  final bool scrollCollapseEnabled;
+
+  /// 横屏车机侧边面板专用：rail/compact 的形态判定改用整屏宽度而非本容器宽度。
+  ///
+  /// 侧边面板会把主界面压窄；若压到 600dp 以下，横屏本该用的 NavigationRail
+  /// 会突然切成带底部 NavigationBar 的 compact 布局。页面仍按整屏高度布局，
+  /// 底部一段就钻进底栏槽位被遮住。置 true 时保持横屏 rail 形态，底栏不再出现。
+  /// 非车机路径恒 false，判定口径与改动前逐像素一致。
+  final bool useFullWidthForBreakpoint;
+
+  /// 横屏车机侧边面板专用：rail 布局也要消费底部系统栏（平板 Taskbar）安全区。
+  ///
+  /// 常规横屏由底部 MiniPlayer 承担底部留白；车机模式下 MiniPlayer 隐藏，
+  /// 而 rail 分支原本 `SafeArea(bottom: false)`，列表底部就会钻到系统 Taskbar
+  /// 下面。置 true 时按 `viewPadding.bottom` 留出完整净空（含 edge-to-edge
+  /// 下不计入 padding 的那部分）；非车机路径恒 false，布局零变化。
+  final bool reserveBottomInRail;
+
   const ResponsiveScaffold({
     super.key,
     required this.destinations,
@@ -408,6 +504,9 @@ class ResponsiveScaffold extends StatefulWidget {
     this.floatingActionButton,
     this.hideNavigation = false,
     this.hideRailNavigation,
+    this.scrollCollapseEnabled = false,
+    this.useFullWidthForBreakpoint = false,
+    this.reserveBottomInRail = false,
   });
 
   @override
@@ -438,6 +537,53 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
   /// [didUpdateWidget] 用这份缓存值决定播动画还是直接落端点。
   bool _reduceMotion = false;
 
+  /// 滚动跟手收起进度：0 = 完整在场，1 = 完全收起。
+  ///
+  /// **与 [_chromeHide] 严格区分**：[_chromeHide] 是「进出二级页面」这类**转场**
+  /// 的 260ms 曲线动画；本进度是**跟手**量 —— 拖动期间直接由手指位移推进（线性、
+  /// 无缓动），松手后走一段吸附动画落到 0/1。两者由 [_ChromeCollapseProgress]
+  /// 逐帧取较大值合成实际收起进度，互不覆盖。
+  ///
+  /// 用 [ValueNotifier] 而不是第二个 [AnimationController]：
+  /// - 拖动期间由 [ScrollUpdateNotification] 写入，**不经 AnimationController
+  ///   的 tick**——跟手值由手指事件驱动，天然与 vsync 同步，不需要额外 Ticker；
+  /// - 吸附动画（松手后）用 [_scrollSettle] 这一个复用控制器跑。
+  ///
+  /// **默认 0**：不滚动时底栏完整在场。
+  final ValueNotifier<double> _scrollCollapse = ValueNotifier<double>(0.0);
+
+  /// 松手 / 惯性结束后的吸附动画控制器（**单个复用**，不每次新建）。
+  ///
+  /// 只在 [_settleScrollCollapse] 里 forward，收敛即停（不常驻），符合
+  /// AGENTS §10「驱动能停」。手指重新接管时由 [_cancelScrollSettle] 停住 ——
+  /// 只 stop 不 dispose，下一段位移从停下的进度续接。
+  late final AnimationController _scrollSettle;
+
+  /// 当前吸附的补间（起点 = 手指松开时的进度，终点 = 0 或 1）。
+  ///
+  /// 在 [_settleScrollCollapse] 里重建；监听器只读它，因此跟手期间不参与。
+  Animation<double>? _settleAnimation;
+
+  /// 当前滚动轴上的可用槽位高度（dp），跟手换算的分母。
+  ///
+  /// = 底栏完整高度 + 系统手势条净空，与 [BottomChromeSlot.slotHeight] 同源。
+  /// 由 [_buildCompactLayout] 每帧回填（只写字段、不 setState）——
+  /// 文字档位切换 / 转屏后高度变化，下一次拖动自然按新值换算。
+  double _scrollSlotHeight = 0.0;
+
+  /// 本段拖动是否处于「跟手收起」的有效期（手指按下后首帧置 true，
+  /// [ScrollEndNotification] 后置 false）。
+  ///
+  /// 用来挡住**非用户拖动**引起的滚动量（程序化 animateTo、列表首次布局的
+  /// 尺寸修正、下拉刷新的回弹）：只有真手指拖动才应该推动底栏。
+  bool _scrollDragActive = false;
+
+  /// 滚动跟手是否生效（compact 分支 + 开关打开 + 非 TV + 非横屏 rail）。
+  ///
+  /// 三处消费（监听器挂载、[_applyScrollDelta] 早退、吸附目标解算）必须
+  /// **同一判据**，故收口成 getter，不要在调用点各写一份条件。
+  bool get _scrollCollapseActive => widget.scrollCollapseEnabled && !kTvBuild;
+
   /// 横屏侧栏的滑出动画控制器/曲线（与竖屏底栏同规格、独立驱动，理由见
   /// initState 注释）。
   late final AnimationController _railHide;
@@ -461,8 +607,38 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
   /// 理由与释放同 [_navNodes]。
   final Map<int, FocusNode> _navItemNodes = {};
 
+  /// 缓存的底栏 widget（**跨帧复用同一实例**）。
+  ///
+  /// 为什么必须缓存：[_buildCompactLayout] 由 `AnimatedBuilder(_collapse)` 逐帧
+  /// 调用，若每帧现造一个 `NavigationBar`，则它内部的主题查表、Material、
+  /// 5 个 destination 的 `_NavigationDestinationBuilder` / `InkWell` / 指示器
+  /// 动画全部逐帧重建 —— 实测（极简 body、排除页面成本）**增量 9.12ms/帧**，
+  /// 与「跟手要满帧」直接冲突。
+  ///
+  /// 缓存键 = 底栏内容真正依赖的输入（选中项 / 高度档位 / destinations 列表）。
+  /// 三者不变时返回**同一个 Widget 实例**，`Element.updateChild` 走
+  /// `child.widget == newWidget` 短路，整棵底栏子树不重建；变化时（切 tab、
+  /// 设置页改标签档位、tab 配置变更）照常重建，胶囊回弹 / 选中态动画不受影响。
+  ///
+  /// 隐藏 [kTvBuild]：TV 的导航项每次 build 都要向 [TvNavFocusBridge] 重新登记
+  /// 焦点节点（见 [_tvWrapNavItem]），缓存会跳过登记。TV 本就不参与滚动跟手，
+  /// 这里直接不缓存，行为与改动前逐字节一致。
+  Widget? _cachedNavBar;
+  int? _cachedNavSelectedIndex;
+  double? _cachedNavBarHeight;
+  List<NavigationDestination>? _cachedNavDestinations;
+
+  /// 实际呈现在屏幕上的底栏收起进度（转场收起 ∨ 滚动跟手收起，逐帧取大）。
+  ///
+  /// 两个 [AnimatedBuilder]（build 与 [_buildCompactLayout]）读它而不是直接读
+  /// [_chromeHideCurve]，于是滚动跟手也能驱动同一套「槽位收缩 + 底栏下沉」。
+  late final _ChromeCollapseProgress _collapse;
+
   @override
   void dispose() {
+    _scrollSettle.removeListener(_onScrollSettleTick);
+    _scrollSettle.dispose();
+    _scrollCollapse.dispose();
     _chromeHide.dispose();
     _railHide.dispose();
     for (final node in _navNodes.values) {
@@ -520,6 +696,15 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
       curve: M3ExpressiveMotion.chromeSinkEasing,
       reverseCurve: M3ExpressiveMotion.chromeRiseEasing,
     );
+    // 吸附动画：复用同一个控制器（每个 tick 只写 [_scrollCollapse]）。
+    // 初始值 0 = 底栏完整在场。
+    _scrollSettle = AnimationController(
+      vsync: this,
+      duration: kScrollCollapseSettleDuration,
+      value: 0.0,
+    )..addListener(_onScrollSettleTick);
+    // 合并进度：转场收起与滚动跟手收起逐帧取大（见 [_ChromeCollapseProgress]）。
+    _collapse = _ChromeCollapseProgress(_chromeHideCurve, _scrollCollapse);
     _bounceKeys = _initBounceKeys(widget.railDestinations.length);
     _selectedBounceKeys = _initBounceKeys(widget.railDestinations.length);
     // tv: 首帧结束即关闭 TV 首屏 autofocus 锚点——autofocus 在首帧焦点结算
@@ -536,11 +721,44 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
   void didChangeDependencies() {
     super.didChangeDependencies();
     _reduceMotion = MediaQuery.disableAnimationsOf(context);
+    // 转屏进横屏（rail 布局）：竖屏那位的跟手收起失去载体（compact 分支不再构建、
+    // 监听器不再挂载），进度若不归零，转回竖屏时底栏会带着「上次滚动的收起态」
+    // 凭空消失。MediaQuery 变化会走到这里（[_reduceMotion] 已依赖它），是转屏
+    // 唯一稳定的复位时机 —— 不能放在 build 里（写 notifier 会触达监听方）。
+    if (!_scrollCollapseActive ||
+        usesNavigationRail(MediaQuery.sizeOf(context).width)) {
+      if (_scrollCollapse.value != 0.0) {
+        _cancelScrollSettle();
+        _settleAnimation = null;
+        _scrollCollapse.value = 0.0;
+        _scrollDragActive = false;
+      }
+    }
   }
 
   @override
   void didUpdateWidget(covariant ResponsiveScaffold oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // 开关关闭 / 切到 TV：滚动那一位失去写入者，必须当场复位，否则底栏会停在
+    // 收起位置（合并进度取较大值，[_chromeHide] 归零也救不回来）。
+    if (!_scrollCollapseActive && _scrollCollapse.value != 0.0) {
+      _cancelScrollSettle();
+      _settleAnimation = null;
+      _scrollCollapse.value = 0.0;
+      _scrollDragActive = false;
+    }
+    // 进二级页面（hideNavigation 翻 true）：转场收起接管，底栏本来就会收到 1.0。
+    // 此时若不清掉滚动那一位，它会在「滚着进二级页、再返回一级页」时带着旧值
+    // 复活 —— 合并取大，底栏回到一级页仍然是收起的。返回方向同理（hideNavigation
+    // 翻 false 时滚动位必须是干净的 0）。
+    if (widget.hideNavigation != oldWidget.hideNavigation) {
+      if (_scrollCollapse.value != 0.0) {
+        _cancelScrollSettle();
+        _settleAnimation = null;
+        _scrollCollapse.value = 0.0;
+        _scrollDragActive = false;
+      }
+    }
     final count = widget.railDestinations.length;
     if (_bounceKeys.length != count) {
       _bounceKeys = _initBounceKeys(count);
@@ -572,6 +790,136 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
 
   List<GlobalKey<_CapsuleBounceState>> _initBounceKeys(int count) {
     return List.generate(count, (_) => GlobalKey<_CapsuleBounceState>());
+  }
+
+  /// 滚动跟手：把这一笔滚动位移换算成底栏收起进度的增量。
+  ///
+  /// **1:1 跟手**是本机制的核心 —— 进度增量 = 位移 / 槽位高。手指向上滑 x dp，
+  /// 底栏就收起 x / slotHeight（0~1）；向下滑则同比例展开。因此底栏顶缘与手指
+  /// 的相对位置在拖动全程不变，读起来是「底栏被手指推着走」而不是「滑够阈值
+  /// 就自动弹走」。**不要**在这里插缓动曲线或改成阈值触发：那会让手指与底栏
+  /// 脱节（[M3ExpressiveMotion.chromeSinkEasing] 用于 260ms 转场，与跟手不是
+  /// 一类，见 [_ChromeCollapseProgress] 的合并说明）。
+  ///
+  /// 方向约定（与 SecondaryMiniPlayerHost 的滚动收起同一口径）：
+  /// - [delta] > 0 = 内容向上滚（手指上滑、浏览更靠后的内容）→ **收起**；
+  /// - [delta] < 0 = 内容向下滚（手指下滑、往回翻）→ **展开**。
+  ///
+  /// 两处「不跟手」的边界：
+  /// 1. **到顶恒展开**：pixels <= minScrollExtent 时直接把进度推向 0。用户已经
+  ///    滚到头还继续下滑时，跟手会把差额全吞掉，底栏留在半空；到顶展开符合
+  ///    「回到最新内容就该看见底栏」的预期；
+  /// 2. **到底不额外处理**：到底继续上滑只是 OverscrollNotification（不进这里），
+  ///    进度停在按下时的位置即可，硬把底栏推没会与回弹动画抢手感。
+  void _applyScrollDelta(ScrollUpdateNotification n) {
+    if (!_scrollCollapseActive) return;
+    // 只认用户拖动产生的位移：程序化滚动（列表补批后的尺寸修正、animateTo、
+    // 下拉刷新回弹）不该推动底栏。_scrollDragActive 只在
+    // ScrollStartNotification.dragDetails 非空时置位（见 [_onScrollNotification]）。
+    if (!_scrollDragActive) return;
+    if (n.metrics.axis != Axis.vertical) return;
+    final double delta = n.scrollDelta ?? 0.0;
+    if (!delta.isFinite || delta == 0.0) return;
+    final double slot = _scrollSlotHeight;
+    // 槽位高还没回填（首帧前）或退化时不换算：除以 0 会得到 inf。
+    if (!slot.isFinite || slot <= 0.0) return;
+
+    // 跟手中：手指重新接管，未跑完的吸附立即让位（否则两股力互相拉扯）。
+    _cancelScrollSettle();
+
+    final double current = _scrollCollapse.value;
+    // 到顶：无论方向，直接往展开推（见方法注释第 1 条）。
+    if (n.metrics.pixels <= n.metrics.minScrollExtent) {
+      _scrollCollapse.value = 0.0;
+      return;
+    }
+    final double next = (current + delta / slot).clamp(0.0, 1.0);
+    if (next == current) return;
+    _scrollCollapse.value = next;
+  }
+
+  /// 滚动开始 / 更新的通知入口（只认纵向滚动，嵌套横向滚动不吃）。
+  bool _onScrollNotification(ScrollNotification n) {
+    if (!_scrollCollapseActive) return false;
+    if (n.metrics.axis != Axis.vertical) return false;
+    // 不能按 [ScrollNotification.depth] == 0 过滤：depth 统计的是冒泡路线经过的
+    // **Viewport** 个数，而 TabBarView/PageView 这类横分页器本身就是一个 Viewport，
+    // 夹在「tab 内纵向列表 → 壳层监听」中间，会把页面的纵向滚动通知一律抬成
+    // depth=1。按 depth 过滤会让我的收藏 / 本地音乐 / 搜索等一切以 TabBarView 为
+    // 主体的主界面永远收不起底栏（2026-11-20 用户实测反馈）。
+    //
+    // 分页器**自身**的翻页通知 metrics.axis 恒为横向，在上面的 axis 判定处已被拦下；
+    // 卡片内嵌的横向轮播同理。所以这里只管纵向：页面主体纵向滚动跟手收起，
+    // 嵌套纵向列表同样计入浏览位移（位移方向仍由 [_applyScrollDelta] 的到顶/
+    // clamp 语义兜底，不会反向推动底栏）。
+    if (n is ScrollStartNotification) {
+      // dragDetails 非空 = 手指拖动起手；空 = 程序化滚动/惯性延续，不重置状态。
+      if (n.dragDetails != null) _scrollDragActive = true;
+      return false;
+    }
+    if (n is ScrollUpdateNotification) {
+      _applyScrollDelta(n);
+      return false;
+    }
+    if (n is ScrollEndNotification) {
+      // 手指已离开：收尾吸附到最近端点（见 [_settleScrollCollapse]）。
+      // 只有真的拖动过才需要吸附，静止态不启动任何动画。
+      if (_scrollDragActive) {
+        _scrollDragActive = false;
+        _settleScrollCollapse();
+      }
+      return false;
+    }
+    return false;
+  }
+
+  /// 取消未跑完的吸附动画（手指接管时调用）。
+  ///
+  /// 只 `stop()` 不 dispose：吸附由复用的同一个控制器驱动（见 [_scrollSettle]），
+  /// 停在当下值后由下一笔位移直接续接，避免每次起手都新建/销毁 Ticker。
+  void _cancelScrollSettle() {
+    if (_scrollSettle.isAnimating) _scrollSettle.stop();
+  }
+
+  /// 吸附动画逐帧回调：把补间值写进 [_scrollCollapse]。
+  ///
+  /// 用常驻监听 + 可替换的 [_settleAnimation]（而不是每次吸附 add/remove
+  /// 闭包）：监听器只有一个，跟手期间 [_settleAnimation] 为 null 时立刻返回，
+  /// 零分配、无泄漏。
+  void _onScrollSettleTick() {
+    final Animation<double>? animation = _settleAnimation;
+    if (animation == null) return;
+    final double v = animation.value;
+    if (v.isFinite) _scrollCollapse.value = v.clamp(0.0, 1.0);
+  }
+
+  /// 松手后把进度吸附到最近端点：>=50% 收起，<50% 复位。
+  ///
+  /// **50% 是唯一判据**，不看甩动速度：本机制的收起量已经由手指 1:1 给足，
+  /// 引入速度预测会在「滑一点就松手」时把底栏甩走，与跟手直觉冲突。
+  /// 「减弱动态效果」下直接落端点，不播吸附。
+  void _settleScrollCollapse() {
+    if (!_scrollCollapseActive) return;
+    final double current = _scrollCollapse.value;
+    final double target = current >= 0.5 ? 1.0 : 0.0;
+    if (current == target) return;
+    if (_reduceMotion) {
+      _scrollCollapse.value = target;
+      return;
+    }
+    _cancelScrollSettle();
+    // 起点取手指松开时的实际进度（不是 0）：吸附只是把剩下的那一段走完。
+    // 收起方向用沉底曲线、展开方向用回升曲线，与 260ms 转场同一套语汇。
+    _settleAnimation = Tween<double>(begin: current, end: target).animate(
+      CurvedAnimation(
+        parent: _scrollSettle,
+        curve: target >= 1.0
+            ? M3ExpressiveMotion.chromeSinkEasing
+            : M3ExpressiveMotion.chromeRiseEasing,
+      ),
+    );
+    _scrollSettle.value = 0.0;
+    _scrollSettle.forward();
   }
 
   /// 点击 destination 完成后的统一入口：先触发该 tab 胶囊自驱动的水平
@@ -655,7 +1003,7 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
     required Widget child,
   }) {
     if (!kTvBuild) return child;
-    // 节点复用禁忌同 [_tvWrapNavIcon]：本层由 AnimatedBuilder(_chromeHideCurve)
+    // 节点复用禁忌同 [_tvWrapNavIcon]：本层由 AnimatedBuilder(_collapse)
     // 逐帧重建，每次 build 新建 FocusNode 会逐帧泄漏且节点身份每帧变化
     // （收起动画期间焦点丢失）。竖屏整项只有一个变体，按项池化进
     // [_navItemNodes]，随本 State dispose 统一释放。
@@ -679,22 +1027,29 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
     // 安全区补偿四处都读它，因此整层按帧重建。`widget.body` / `compactBody` 是
     // 跨帧不变的实例，页面子树不会跟着重建。
     return AnimatedBuilder(
-      animation: _chromeHideCurve,
+      animation: _collapse,
       builder: (BuildContext context, Widget? _) {
-        final double collapse = _chromeHideCurve.value;
+        final double collapse = _collapse.value;
         return LayoutBuilder(
           builder: (BuildContext context, BoxConstraints constraints) {
-            final bool rail = usesNavigationRail(constraints.maxWidth);
+            // 车机侧边面板下主界面被压窄，但横屏形态不应因此退化成底部导航栏。
+            // 只有该开关打开时才换用整屏宽度判形态，其余路径仍按局部可用宽度。
+            final double breakpointWidth =
+                widget.useFullWidthForBreakpoint
+                    ? MediaQuery.sizeOf(context).width
+                    : constraints.maxWidth;
+            final bool rail = usesNavigationRail(breakpointWidth);
             return BottomChromeScope(
               // 坞位存在性：收起动画期间底栏仍在槽位里（collapse < 1），
               // 播放条据此把净空口径线性过渡（见 BottomChromeScope 的说明）。
               hasBottomChrome: !rail && collapse < 1.0,
               bottomChromeCollapse: collapse,
-              // 逐帧进度源：同一份收起动画本体，供消费方**订阅**（而不是对本
-              // InheritedWidget 建立依赖）—— 后者会让整棵消费子树逐帧重建。
-              collapseProgress: _chromeHideCurve,
+              // 逐帧进度源：同一份收起动画本体（含滚动跟手那位写入者），供消费方
+              // **订阅**（而不是对本 InheritedWidget 建立依赖）—— 后者会让整棵
+              // 消费子树逐帧重建。
+              collapseProgress: _collapse,
               child: rail
-                  ? _buildRailLayout(getScreenType(constraints.maxWidth))
+                  ? _buildRailLayout(getScreenType(breakpointWidth))
                   : _buildCompactLayout(),
             );
           },
@@ -717,12 +1072,20 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
         ? BottomChromeDimens.navBarIconOnlyHeight
         : BottomChromeDimens.navBarWithLabelHeight;
     final double slotHeight = barHeight + MediaQuery.paddingOf(context).bottom;
-    final double collapse = _chromeHideCurve.value;
+    // 跟手换算的分母：只允许写字段，不 setState（本方法本就逐帧重建，
+    // 槽位高在此处即刻可用）。
+    _scrollSlotHeight = slotHeight;
+    final double collapse = _collapse.value;
     // 隐藏判定不能只看进度：恢复方向（reverse）起步的那一帧进度仍是 1.0，
     // 只看进度会让底栏在"第一帧就该重新进树"时仍被判为已隐藏、退化成硬切。
-    // 目标态（widget.hideNavigation）与进度双条件：只有"收起方向 + 进度到 1"
-    // 才移除槽位，两端语义与原实现一致（见不变量：collapse>=1 传 null）。
-    final bool chromeHidden = collapse >= 1.0 && widget.hideNavigation;
+    // 转场收起时必须「目标态 + 进度」双条件（每一帧 hideNavigation 仍是旧值/新值
+    // 交替，只靠进度会在两端抖动）；滚动收起没有「目标态」这个额外输入，进度到 1
+    // 就是该移除槽位的唯一信号 —— 两种来源分别判定后取或。
+    //
+    // 槽位一旦移除，底栏就不再是 Scaffold 的 bottomNavigationBar，body 底部安全区
+    // 交回 Scaffold 自行补（见 _withAnimatedBottomInset 的说明），不会露白边。
+    final bool chromeHidden = (collapse >= 1.0 && widget.hideNavigation) ||
+        _scrollCollapse.value >= 1.0;
     return Scaffold(
       key: _scaffoldKey,
       appBar: widget.appBar,
@@ -732,10 +1095,22 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
       // 真实值 —— 那又是一处滞后跳变。这里按收起进度把该 inset 线性补回去；
       // 两端同样保持包装（见 _withAnimatedBottomInset：换 body 槽位的类型会重建
       // 整棵 body，常驻播放条的封面就会闪）。
-      body: _withAnimatedBottomInset(
-        context,
-        widget.compactBody ?? widget.body,
-        collapse,
+      // 滚动跟手监听：只包在这一层（不包 Scaffold 之外），因此只收 compact 竖屏
+      // 页面内容的纵向滚动通知。关闭开关时整段树摇剔除，触屏路径零变化。
+      //
+      // body 实例跨帧稳定（`widget.compactBody ?? widget.body`），逐帧新建的只有
+      // NotificationListener / MediaQuery 这两层轻包装，页面子树不重建。
+      body: NotificationListener<ScrollNotification>(
+        onNotification: widget.scrollCollapseEnabled
+            ? _onScrollNotification
+            : null,
+        // 补偿进度用 [_bottomInsetProgress] 而不是 collapse：滚动跟手期间
+        // 不逐帧改 padding.bottom（否则每帧整页重建，实测 +13.56ms/帧）。
+        child: _withAnimatedBottomInset(
+          context,
+          widget.compactBody ?? widget.body,
+          _bottomInsetProgress(collapse),
+        ),
       ),
       floatingActionButton: widget.floatingActionButton,
       bottomNavigationBar: chromeHidden
@@ -750,36 +1125,65 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                 progress: PlayerPanelSignal.expansion,
                 // tv: 主导航分区（memoryKey 'tv/main-nav'，边缘 leave）。正常构建
                 // 原样返回 NavigationBar。
-                child: _tvWrapNavRegion(
-                  NavigationBar(
-                    // 仅图标（alwaysHide）时高度减半紧凑显示（44）；
-                    // 显示文字（始终显示/仅当前页）时用 64 紧凑高度，
-                    // 比默认 80 更矮但仍能容纳 icon + label。
-                    height: barHeight,
-                    selectedIndex: widget.selectedIndex,
-                    onDestinationSelected: _handleDestinationSelected,
-                    // 每个 tab 的图标外包自定义胶囊（选中时显示，点击/切换后
-                    // 胶囊水平超出回弹，图标不动）
-                    destinations: [
-                      for (int i = 0; i < widget.destinations.length; i++)
-                        _tvWrapNavItem(
-                          index: i,
-                          child: NavigationDestination(
-                            // 正常构建原样返回 _CapsuleBounce。
-                            icon: _CapsuleBounce(
-                              key: _bounceKeys[i],
-                              selected: widget.selectedIndex == i,
-                              child: widget.destinations[i].icon,
-                            ),
-                            label: widget.destinations[i].label,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
+                child: _tvWrapNavRegion(_buildCachedNavBar(barHeight)),
               ),
             ),
     );
+  }
+
+  /// 取（必要时新建）底栏实例 —— 见 [_cachedNavBar] 的说明。
+  ///
+  /// 缓存命中条件必须覆盖 `NavigationBar` 真正读取的每一项输入，否则会留下
+  /// 「切了 tab 但底栏没变」这类陈旧 UI。逐项：
+  /// - [selectedIndex]：选中态 / 指示器位置；
+  /// - [barHeight]：标签档位（alwaysHide=44 / 其余=64）决定的高度；
+  /// - [widget.destinations]：用户重排 / 显隐 tab 会换掉整张列表；
+  /// - 每个 _CapsuleBounce 的 [GlobalKey] 与 `selected` 都在上面的列表里，
+  ///   随 destinations 和 selectedIndex 一起被覆盖。
+  ///
+  /// TV 构建不缓存：导航项每帧都要向 [TvNavFocusBridge] 重新登记焦点节点
+  /// （见 [_tvWrapNavItem]），跳过登记会让方向键移交失效。
+  Widget _buildCachedNavBar(double barHeight) {
+    final bool cacheable = !kTvBuild && widget.scrollCollapseEnabled;
+    if (cacheable &&
+        _cachedNavBar != null &&
+        _cachedNavSelectedIndex == widget.selectedIndex &&
+        _cachedNavBarHeight == barHeight &&
+        identical(_cachedNavDestinations, widget.destinations)) {
+      return _cachedNavBar!;
+    }
+    final Widget built = NavigationBar(
+      // 仅图标（alwaysHide）时高度减半紧凑显示（44）；
+      // 显示文字（始终显示/仅当前页）时用 64 紧凑高度，
+      // 比默认 80 更矮但仍能容纳 icon + label。
+      height: barHeight,
+      selectedIndex: widget.selectedIndex,
+      onDestinationSelected: _handleDestinationSelected,
+      // 每个 tab 的图标外包自定义胶囊（选中时显示，点击/切换后
+      // 胶囊水平超出回弹，图标不动）
+      destinations: [
+        for (int i = 0; i < widget.destinations.length; i++)
+          _tvWrapNavItem(
+            index: i,
+            child: NavigationDestination(
+              // 正常构建原样返回 _CapsuleBounce。
+              icon: _CapsuleBounce(
+                key: _bounceKeys[i],
+                selected: widget.selectedIndex == i,
+                child: widget.destinations[i].icon,
+              ),
+              label: widget.destinations[i].label,
+            ),
+          ),
+      ],
+    );
+    if (cacheable) {
+      _cachedNavBar = built;
+      _cachedNavSelectedIndex = widget.selectedIndex;
+      _cachedNavBarHeight = barHeight;
+      _cachedNavDestinations = widget.destinations;
+    }
+    return built;
   }
 
   /// 把 body 的底部安全区 inset 按底栏收起进度补回去（见调用点说明）。
@@ -793,13 +1197,13 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
   Widget _withAnimatedBottomInset(
     BuildContext context,
     Widget body,
-    double collapse,
+    double progress,
   ) {
     final mq = MediaQuery.of(context);
     final double inset = mq.padding.bottom;
     // 无手势条净空时没有可补的量；这一判据不随转场变化，所以不会造成两端换型。
     if (!inset.isFinite || inset <= 0) return body;
-    final double t = collapse.isFinite ? collapse.clamp(0.0, 1.0) : 0.0;
+    final double t = progress.isFinite ? progress.clamp(0.0, 1.0) : 0.0;
     return MediaQuery(
       data: mq.copyWith(
         padding: mq.padding.copyWith(bottom: inset * t),
@@ -808,7 +1212,43 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
     );
   }
 
+  /// 底部安全区补偿该走的进度 —— **不是**底栏收起进度本身。
+  ///
+  /// 为什么要单独一个量（性能，实测量级很大）：
+  /// [MediaQuery] 是 `InheritedModel`，注入的 `padding.bottom` 每帧变一次，
+  /// 所有在 build 里读 `MediaQuery.paddingOf` 的页面就会被通知重建一次。真实
+  /// 页面几乎都这么写（发现页 / 音乐库 / 我的 / 榜单…共 22 处），于是一次滚动
+  /// 手势的每一帧都在重建整页 —— 实测 20 帧滚动：开启 17.88ms/帧、关闭
+  /// 4.32ms/帧，**增量 13.56ms/帧**，几乎占满 60fps 的 16.7ms 预算。这正是
+  /// 「跟手时不跟手」的来源。
+  ///
+  /// 而这个补偿本质上是个**阶跃**：底栏在槽位里时 Scaffold 已把 body 的
+  /// `padding.bottom` 整段移除（应为 0），槽位移除后应由 Scaffold 自己补回
+  /// 真实值。260ms 的渐变只是为了不让这个阶跃被看见。所以：
+  ///
+  /// - **路由转场**（进出二级页）：沿用 [_chromeHideCurve] 逐帧渐变 —— 一次性、
+  ///   260ms，且此刻页面本就随路由转场在动，重建不可避免；
+  /// - **滚动跟手**：只在「彻底收起」那一刻阶跃到 1，过程中恒 0。因为列表的
+  ///   底部 padding 只影响**滚动余量**，不影响当前视口内任何内容的位置 ——
+  ///   用户正在滚动时那一格跳变在视觉上不可见，却能省下每帧整页重建。
+  double _bottomInsetProgress(double collapse) {
+    // 滚动侧已彻底收起：等价于槽位被移除，安全区必须交回 body。
+    if (_scrollCollapse.value >= 1.0) return 1.0;
+    // 其余情况只认路由转场那一位（滚动跟手期间恒 0，不逐帧改 MediaQuery）。
+    return _chromeHideCurve.value;
+  }
+
   Widget _buildRailLayout(ScreenType screenType) {
+    // 车机模式下 MiniPlayer 隐藏，rail 分支原本又不吃底部安全区；平板 Taskbar
+    // 是 EXTRA_NAVIGATION_BAR，edge-to-edge 下可能只落在 viewPadding 里。
+    // SafeArea 消费 padding，差额用 Padding 补齐，一次留满 viewPadding.bottom。
+    final mq = MediaQuery.of(context);
+    final double bottomExtra = widget.reserveBottomInRail
+        ? (mq.viewPadding.bottom - mq.padding.bottom)
+            .clamp(0.0, 1.0e4)
+            .toDouble()
+        : 0.0;
+
     // 横屏侧栏文字跟随设置页「底部导航栏文字」三档
     //（NavigationBarThemeData.labelBehavior，与竖屏 NavigationBar 同源），
     // 映射到原生 NavigationRail 的 labelType。
@@ -830,8 +1270,10 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
       // 只保护左右，上下留给页面自身的 AppBar / body 处理。
       body: SafeArea(
         top: false,
-        bottom: false,
-        child: Row(
+        bottom: widget.reserveBottomInRail,
+        child: Padding(
+          padding: EdgeInsets.only(bottom: bottomExtra),
+          child: Row(
           children: [
             // 横屏侧栏滑出：原来是 Visibility(maintainState) 硬切（Offstage 瞬间
             // 消失/出现，morph 转场时非常突兀）。现改为与竖屏底栏同一套逐帧动画
@@ -981,6 +1423,7 @@ class _ResponsiveScaffoldState extends State<ResponsiveScaffold>
                 ? widget.expandedBody ?? widget.mediumBody ?? widget.body
                 : widget.mediumBody ?? widget.body),
           ],
+          ),
         ),
       ),
     );

@@ -3,10 +3,12 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:ui';
+import 'dart:ui' as ui;
 
 import 'package:dpad/dpad.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart' show kPrimaryButton;
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/services.dart';
 import 'package:m3e_core/m3e_core.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -14,6 +16,7 @@ import 'package:provider/provider.dart';
 import '../download/download_actions.dart';
 
 import '../../core/build_flags.dart';
+import '../../core/fx/waves/wave_reveal.dart';
 import '../../core/platform_capabilities.dart';
 import '../../core/remote/tv_hint_bar.dart';
 import '../../core/remote/tv_menu_key_shortcuts.dart';
@@ -30,6 +33,7 @@ import '../../core/services/media_notification_service.dart';
 import '../../core/services/music_haptics_service.dart';
 import '../../core/services/spectrum_service.dart';
 import '../../core/services/stem_separation_service.dart';
+import '../../core/fx/waves/distortion_wave_style.dart';
 import '../../core/services/windows_fullscreen.dart';
 import '../../core/services/windows_window_controls.dart';
 import '../../core/theme/app_dimens.dart';
@@ -226,6 +230,10 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
   bool _hasTranslation = false;
   bool _hasRoma = false;
 
+  // 歌词选择模式是否激活（AppleLyricsView 回调）：激活时隐藏歌词区右下角
+  // 的翻译/伴唱角标按钮，避免与选择模式底部操作栏重叠（真机验收反馈）
+  bool _lyricSelectionActive = false;
+
   // 背景（模糊大图）淡入淡出动画。封面自身的切歌过渡已改为
   // 「模糊 + 纵轴翻转」（见 widgets/cover_flip_crossfade.dart 的
   // CoverFlipCrossfade），以下字段只为背景交叉淡服务。
@@ -239,6 +247,11 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
 
   /// 当前翻转方向系数（+1 下一曲方向 / -1 上一曲方向）；方向不明时沿用上次。
   int _coverFlipDirection = 1;
+
+  /// 封面是否正在翻转（拖动 / 回弹 / 提交）。
+  /// 封面外层那圈投影画的是**静止方盒**，翻转时轮廓不跟着收窄 → 侧立时仍是
+  /// 一整块方形阴影（穿帮）。此通道让阴影在翻转窗口内淡出、收敛后复原。
+  final ValueNotifier<bool> _coverFlipActive = ValueNotifier<bool>(false);
 
   /// 相邻曲目封面预载的错峰 Timer（翻转窗口结束后才跑，见 _onPlayerSongChanged）。
   Timer? _preloadNeighborTimer;
@@ -263,6 +276,11 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
   // 动态字体颜色：从专辑封面提取的主色（歌词当前行按「混色比例」与白色混色用）
   Color? _lyricAccentColor;
   String? _lastAccentUrl;
+
+  /// 「背景增透」采样源：背景层总层（模糊封面 / 流光 + 蒙版 / 写真 / 频谱）
+  /// 的 RepaintBoundary key。AppleLyricsView 在赋色方式为 backgroundBloom 时
+  /// 从该层低频抓取当前行背后的背景条带（见 utils/lyric_bg_bloom.dart）。
+  final GlobalKey _bgLayerKey = GlobalKey();
 
   /// 当前生效的 tab 结构（含封面 tab / 含评论 tab）。
   /// TabController.length、TabBarView.children、底部导航条 items 全部由它派生；
@@ -358,6 +376,14 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
   /// 用「本趟」而非「上一次的残值」：长按 / F11 每次进入都显式传 true，
   /// 不会把右键那次的 false 泄漏给下一次手势。
   bool _zenWindowFullscreen = true;
+
+  /// 本趟 Zen 退出时由 [WindowsFullscreen.exitZen] 返回的「进入前全屏快照」。
+  ///
+  /// 只有本趟切过全屏（长按 / F11）才有值；右键进入没调 enterZen，恒为 null。
+  /// 退出波据此判「退全屏后窗口是圆角还是直角」——读 [WindowsFullscreen.active]
+  /// 镜像必然迟一轮 IPC，而波在下一帧 build 就要取圆角。 [_enterZenMode] 每次
+  /// 进入时清空。
+  bool? _zenExitSnapshot;
 
   /// Windows F11 → Zen 的桥回调（注册/注销要同一个引用，故存字段）。
   late final bool Function() _zenToggleHandler = _f11ToggleZen;
@@ -564,6 +590,8 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
       duration: const Duration(milliseconds: 400),
       vsync: this,
     );
+    // 长按封面进出 Zen 的波：先把着色器编译好，第一次长按不该退成直接切换。
+    unawaited(WaveReveal.precache());
     _zenAnimation = CurvedAnimation(
       parent: _zenController,
       curve: Curves.easeInOut,
@@ -1007,6 +1035,50 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     }
   }
 
+  /// 手势可切换的邻居：口径与 MD 页 _pagerNeighborSong 一致
+  /// （只有 loopMode == all 才首尾绕回），保证手势目标 = 按钮路径目标。
+  Song? _swipeNeighborSong(PlayerProvider player, int delta) {
+    final list = player.playlist;
+    if (list.length < 2) return null;
+    final index = player.currentIndex + delta;
+    if (index < 0) {
+      return player.loopMode == AppLoopMode.all ? list[list.length - 1] : null;
+    }
+    if (index >= list.length) {
+      return player.loopMode == AppLoopMode.all ? list[0] : null;
+    }
+    return list[index];
+  }
+
+  /// 手势翻面时卡背显示的目标封面：目标邻居的**静态**封面。
+  ///
+  /// 刻意不建 `DepthCoverHost` / `DynamicCoverView`：翻面窗口只有几百毫秒，
+  /// 多拉一路视频或深度纹理纯属浪费；静态图命中磁盘/内存缓存即可。
+  Widget _buildSwipeTargetArtwork(int direction) {
+    final player = context.read<PlayerProvider>();
+    final song = _swipeNeighborSong(player, direction > 0 ? 1 : -1);
+    return PlayerArtworkImage(
+      artworkUri: song?.artworkUri,
+      fallbackFilePath: song?.localPath,
+      fit: BoxFit.cover,
+      iconSize: 48,
+      backgroundColor: Colors.white12,
+      iconColor: Colors.white54,
+    );
+  }
+
+  /// 拖动提交：与 MD pager / 传输按钮同款，触感 + 真正切歌。
+  void _onCoverSwipeCommit(CoverSwitchIntent intent) {
+    AppHaptics.click(HapticCategory.transport);
+    final player = context.read<PlayerProvider>();
+    switch (intent) {
+      case CoverSwitchIntent.previous:
+        player.previous();
+      case CoverSwitchIntent.next:
+        player.next();
+    }
+  }
+
   @override
   void didChangeMetrics() {
     // 延迟一帧再检测方向，确保 physicalSize 已更新为新方向
@@ -1092,6 +1164,7 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     kWidePaneMarginOverride.removeListener(_onSymmetricPaneSettingChanged);
     kWidePaneIgnoreCutoutEnabled.removeListener(_onSymmetricPaneSettingChanged);
     _controlsPageGestureLock.dispose();
+    _coverFlipActive.dispose();
     _lyricBatcher.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _artworkFadeController.dispose();
@@ -1153,6 +1226,101 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
         !_zenMode && _landscapeImmersiveNeeded();
   }
 
+  // ── 长按封面进出 Zen 的那道波 ──
+
+  /// 切换前抓到的一帧。归 [WaveReveal] 所有：被换掉或摘掉时由它释放，
+  /// 这里只持有引用、不 dispose（否则演到一半图就没了）。
+  ui.Image? _zenWaveImage;
+
+  /// 波从哪出发：封面此刻的矩形（长按按下时量；返回键退出时现场重量）。
+  Rect? _zenWaveSource;
+
+  /// 封面包装 Builder 的最新 context：返回键退出 Zen 时用它量封面矩形作波源。
+  /// builder 每次重建都会刷新；封面不在树上时（如 Zen 停在歌词页）保持旧引用，
+  /// 量之前用 `mounted` 判活，量不到就退回波类型默认源。
+  BuildContext? _zenArtworkCtx;
+
+  /// 为**进入** Zen 准备波源：现场量封面矩形（此刻还是非 Zen 布局，波就从这儿
+  /// 扩散出去）。
+  ///
+  /// 长按路径在指针按下时已经量过；F11 / 右键没有按压上下文，用封面包装 Builder
+  /// 登记的最新 context（[_zenArtworkCtx]）现场量。量不到（封面不在树上，如停在
+  /// 歌词页）就置空，由 WaveStage 退回类型默认源。
+  /// 退出的波源不在这里量 —— 回缩终点是目的屏坐标，见 _exitZenMode 的 post-frame 量取。
+  void _prepareZenWaveSource() {
+    final ctx = _zenArtworkCtx;
+    _zenWaveSource = (ctx != null && ctx.mounted) ? _rectOf(ctx) : null;
+  }
+
+  /// 在状态切换**之前**抓一帧。切完就没得抓了 —— 波要把"切之前那一屏"带走。
+  void _captureZenWave({required bool wave}) {
+    if (!wave || _isDragOverlay || widget.dockMode) return;
+    // 这一层绝不能往上抛：它排在切状态**之前**，抛了 Zen 就再也进不去
+    // （长按 2 秒什么也没发生）。抓不到就只是没有波，切换照常。
+    try {
+      // 整页的 repaint boundary：路由的 modal scope，跟路由过场用的是同一个。
+      final boundary = ModalRoute.of(context)?.subtreeContext?.findRenderObject();
+      if (boundary is! RenderRepaintBoundary || !boundary.hasSize) return;
+      final image = boundary.toImageSync(
+        pixelRatio: MediaQuery.devicePixelRatioOf(context),
+      );
+      setState(() => _zenWaveImage = image);
+    } catch (error, stack) {
+      debugPrint('[ZenWave] capture failed: $error');
+      debugPrintStack(stackTrace: stack, maxFrames: 6);
+    }
+  }
+
+  /// 页面内容的独立 RepaintBoundary 的 key：**常驻**树里保证树形状稳定
+  /// （进出 Zen 不重建页面子树，见 build 里的说明）。
+  final GlobalKey _zenPageBoundary = GlobalKey();
+
+  /// Windows 上按窗口实际圆角换算波的边缘 SDF 半径（见 WindowsFullscreen
+  /// .waveCornerRadius）；其他平台 null 用 screenCenter 预设。
+  DistortionWaveStyle? get _zenWaveStyle {
+    if (!isWindowsDesktop) {
+      // 移动端（含 pad）：波的边缘贴着设备上报的屏幕 R 角。screenCenter 的 62
+      // 是手机屏量级，pad 方角屏 / 小圆角机型沿用会脱节；未上报机型按方角，
+      // 与展开面板终点同口径（DistortionWaveStyle.maxCornerRadiusOf）。
+      final radii = MediaQuery.displayCornerRadiiOf(context);
+      return DistortionWaveStyle.screenCenter.copyWith(
+        cornerRadius: DistortionWaveStyle.maxCornerRadiusOf(radii),
+      );
+    }
+    // 波期间窗口是否处于全屏/最大化形态（= 直角）：
+    // - 进入波：进入后窗口的形态 —— 本趟要切全屏（长按 / F11），或右键进入时
+    //   用户本来就处于 Zen 前全屏（右键不切窗口，形态照用户自己的）；
+    // - 退出波：本趟切过全屏时 = 恢复成进入前的状态（[_zenExitSnapshot]，本地
+    //   真值，不随 IPC 往返迟到）；没切过（右键路径）= 用户自己的窗口态。
+    // 参考 MiniPlayer 展开成播放页那条波的口径（windows_fullscreen.dart）：那些
+    // 波期间窗口形态不变，直接读 active.value 即可；Zen 会切窗口，必须预判。
+    // 注：进入前处于最大化时的直角与「普通窗口圆角」在 Dart 侧不可区分（无最大化
+    // 镜像），该情形沿用圆角口径（与改动前一致）。
+    final bool fullscreenDuringWave = _zenMode
+        ? _zenWindowFullscreen || WindowsFullscreen.active.value
+        : _zenWindowFullscreen
+            ? _zenExitSnapshot == true
+            : WindowsFullscreen.active.value;
+    return WindowsFullscreen.waveStyleForWindow(
+      context,
+      DistortionWaveStyle.screenCenter,
+      windowWillBeFullscreen: fullscreenDuringWave,
+    );
+  }
+
+  /// 波演完了：摘掉它，那一帧由 [WaveReveal] 释放，这里只清引用。
+  void _clearZenWave() {
+    if (!mounted || _zenWaveImage == null) return;
+    setState(() => _zenWaveImage = null);
+  }
+
+  /// [context] 所在控件此刻在屏幕上的矩形；量不到返回 null（波退回类型默认源）。
+  static Rect? _rectOf(BuildContext context) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.hasSize) return null;
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
   /// 进入 Zen 沉浸模式：隐藏顶栏、控件、系统栏，拓宽歌词/封面视图。
   ///
   /// [windowFullscreen]：是否顺带把 Windows 窗口切成无边框全屏。
@@ -1160,7 +1328,11 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
   /// 「沉浸但保留原窗口大小」，此时绝不能调 `enterZen()`（它立刻 `setFullscreen(true)`）。
   /// 不调也天然安全：退出路径的 `exitZen()` 在快照为 null 时是 no-op，不会误关
   /// 用户自己手动开的 F11 全屏（W2 快照模型）。
-  void _enterZenMode({bool windowFullscreen = true}) {
+  ///
+  /// [wave]：这一段用不用扭曲波。长按封面（进 / 退）、系统返回键退出、F11 与
+  /// 右键封面（进 / 退）给 true —— 长按起于封面控件本身，其余现场量封面矩形作
+  /// 波源；peek 的临时唤出/收回是瞬态显隐，保持原样。
+  void _enterZenMode({bool windowFullscreen = true, bool wave = false}) {
     // 停在控制页时**不**切走：控制页是 pager 的子页，ZenFade 只淡出底部导航条，
     // 进度条/传输行/音量条不会随之消失，切去歌词页反而会打断用户正在用的这页。
     if (_zenMode) return;
@@ -1169,6 +1341,10 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     // 会让主界面 _SystemUiUpdater 被永久短路。
     if (widget.dockMode) return;
     _zenWindowFullscreen = windowFullscreen;
+    // 新一趟进入：上一趟的退出快照不再适用（含 peek 回落那次进入），先清掉。
+    _zenExitSnapshot = null;
+    // 必须在切状态之前抓：波要带走的正是"切之前"那一屏。
+    _captureZenWave(wave: wave);
     setState(() => _zenMode = true);
     _zenController.forward();
     // tv: 控件随 _ZenFade 淡出（P-F），先释放焦点避免遥控焦点残留在
@@ -1187,7 +1363,9 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
   ///
   /// [keepWindowFullscreen]：peek（单击封面唤出 chrome）的临时退出用它 ——
   /// 4 秒后会自动回 Zen，若此时跟着退全屏，窗口会缩小再放大两次。
-  void _exitZenMode({bool keepWindowFullscreen = false}) {
+  ///
+  /// [wave]：见 [_enterZenMode]。
+  void _exitZenMode({bool keepWindowFullscreen = false, bool wave = false}) {
     // 显式退出要终止「唤出 4 秒后自动收回」的倒计时，否则用户刚长按退出、
     // 定时器又把 chrome 收回去。放在 !_zenMode 守卫之前：peek 期间 _zenMode
     // 已经是 false，守卫会直接 return、取消不到。
@@ -1198,14 +1376,41 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     _zenChromeDim.value = 1.0;
     // Windows 窗口全屏的恢复同样必须在守卫之前：peek 期间 _zenMode 已是 false，
     // 放守卫后面会让 peek 中途按 F11 退不出全屏。
-    if (!keepWindowFullscreen) WindowsFullscreen.exitZen();
+    if (!keepWindowFullscreen) {
+      // 同帧取回快照：exitZen 内部随即清空，而退出波的 style 在下一帧 build
+      // 就要用它判窗口形态 —— 等 active.value 翻要一轮 IPC，必然迟到。
+      _zenExitSnapshot = WindowsFullscreen.exitZen();
+    }
     if (!_zenMode) return;
+    _captureZenWave(wave: wave);
+    // 退出方向的回缩：源点必须是**回缩完成后**封面所在的矩形（目的屏坐标）。
+    // 触发时刻量到的（[_prepareZenWaveSource] / 指针按下时量的）是 Zen 布局的
+    // 矩形，方向反了不能沿用 —— 先清掉，等新布局落地后现场重量。
+    _zenWaveSource = null;
     setState(() => _zenMode = false);
-    _zenController.reverse();
+    if (wave) {
+      // 带波的退出**跳过 400ms 淡入**，chrome 立即全量出现：波本身就是转场，
+      // 底下再叠一层淡入是冗余的 —— 且覆盖层只在波前后方遮住旧帧，其余部分
+      // 透出的是底下实时的新页面，chrome 不全量就会「按钮最后才出现」（真机踩过）。
+      _zenController.value = 0;
+    } else {
+      _zenController.reverse();
+    }
+    if (wave && _zenWaveImage != null) {
+      // 回缩终点 = 退出后封面所在的矩形：新布局落地后现场量（下一帧，波前
+      // 那时还在屏幕外，起点坐标的迟到无感）。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final ctx = _zenArtworkCtx;
+        _zenWaveSource = (ctx != null && ctx.mounted) ? _rectOf(ctx) : null;
+        if (mounted) setState(() {});
+      });
+    }
     kPlayerZenImmersiveActive.value = false;
     applyImmersiveForOrientation();
     _syncLandscapeImmersiveFlag();
   }
+
 
   /// Windows F11：播放页在场且在最上层时切换 Zen，返回 true 表示消费了本次按键。
   ///
@@ -1219,13 +1424,14 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     // peek 期间（chrome 已临时唤出、4s 后自动回 Zen）：F11 视为「彻底退出 Zen」，
     // 同时取消倒计时与压暗因子，否则定时器会在已回 Zen 后再把因子按到 0.2。
     if (_zenPeekTimer != null) {
-      _exitZenMode();
+      _exitZenMode(wave: true);
       return true;
     }
     if (_zenMode) {
-      _exitZenMode();
+      _exitZenMode(wave: true);
     } else {
-      _enterZenMode();
+      _prepareZenWaveSource();
+      _enterZenMode(wave: true);
     }
     return true;
   }
@@ -1242,9 +1448,10 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     // 倒计时：此时右键的语义应当是「彻底退出」，与 F11 在 peek 中按键一致。
     // 顺序反过来会让右键变成「再进一次 Zen」，用户按不出退出。
     if (_zenPeekTimer != null || _zenMode) {
-      _exitZenMode();
+      _exitZenMode(wave: true);
     } else {
-      _enterZenMode(windowFullscreen: false);
+      _prepareZenWaveSource();
+      _enterZenMode(windowFullscreen: false, wave: true);
     }
   }
 
@@ -1282,7 +1489,7 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
   /// 通过 Listener 的 onPointerDown/Move/Up 直接跟踪指针，
   /// 精确实现 2000ms 长按（不依赖系统 500ms 长按识别延迟），
   /// 同时不与 TabBarView 的水平滑动抢手势。
-  void _onArtworkPointerDown(PointerDownEvent event) {
+  void _onArtworkPointerDown(PointerDownEvent event, BuildContext artworkContext) {
     // 只跟踪主键。右键由 _toggleZenBySecondaryClick 负责；这里若也起 2000ms 长按
     // ticker，右键按住 2 秒会再切一次 Zen（进→立即退），按下期间还会误亮提示层。
     // 只看按键位、不看设备类型：触屏/触控板点按的 down 事件 buttons 恒为
@@ -1290,6 +1497,8 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     // 加 `kind == mouse` 反而会漏掉触控板。
     if ((event.buttons & kPrimaryButton) == 0) return;
     _zenPressOrigin = event.position;
+    // 顺便量一下封面此刻的矩形：长按满 2 秒进 Zen 时，波就从这儿扩散。
+    _zenWaveSource = _rectOf(artworkContext);
     _zenHintHapticFired = false;
     // 兜底复位：上一次的 tap 可能被竖直拖拽等手势抢走、没走到 onTap
     _zenPressConsumedTap = false;
@@ -1299,13 +1508,7 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
       _zenPressOrigin = null;
       // 中震：确认长按达到 2000ms，切换 Zen 模式
       AppHaptics.mediumImpact(HapticCategory.gesture);
-      if (_zenMode) {
-        _exitZenMode();
-      } else {
-        _enterZenMode();
-      }
-      // 提示层与封面内缩随 Zen 转场一起回弹淡出
-      _zenPressController.reverse();
+      _toggleZenByLongPress();
     });
   }
 
@@ -1345,6 +1548,24 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
   }
 
   /// 封面 tab 的 onTap 入口：本次按压已被 Zen 长按消费则放弃这次点击。
+  /// 长按进/退 Zen 的统一收口：**先摘提示、下一帧再切状态**。
+  ///
+  /// 提示环此刻在满进度（手指还按着），直接抓帧会把它冻进波里 —— 退出时表现为
+  /// 「提示环残留到回缩结束」（真机反馈）。这里先把按压缩制器归零（提示层与封面
+  /// 内缩当帧消失），波从下一帧才开始，抓到的帧是干净的。
+  void _toggleZenByLongPress() {
+    _zenPressController.stop();
+    _zenPressController.value = 0;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_zenMode) {
+        _exitZenMode(wave: true);
+      } else {
+        _enterZenMode(wave: true);
+      }
+    });
+  }
+
   bool _consumeZenPressTap() {
     if (!_zenPressConsumedTap) return false;
     _zenPressConsumedTap = false;
@@ -1362,33 +1583,44 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     // 车机模式禁用长按进 Zen：见 _enterZenMode 的说明。
     // 这一处是主守卫（连长按提示层与按压动效一并去掉）。
     if (_zenLongPressEnabled && !widget.dockMode) {
-      result = Listener(
-        onPointerDown: _onArtworkPointerDown,
-        onPointerMove: _onArtworkPointerMove,
-        onPointerUp: (_) => _cancelArtworkPress(),
-        onPointerCancel: (_) => _cancelArtworkPress(),
-        child: AnimatedBuilder(
-          animation: _zenPressController,
-          child: result,
-          builder: (context, artwork) {
-            final progress = _zenPressController.value;
-            // 按压时封面轻微内缩（1.0 → 0.94），松手回弹。
-            // 写真封面（allowShrink=false）：缩小会露出底下页面背景（真机反馈），
-            // 按压只保留引导提示动效。
-            final press = allowShrink
-                ? Curves.easeOut.transform(progress)
-                : 0.0;
-            return Stack(
-              // 与 MD3 同口径：Stack 默认 hardEdge 会把封面投影裁掉（投影画在布局盒
-              // 外侧），必须 Clip.none。提示层是 Positioned.fill，不受影响。
-              clipBehavior: Clip.none,
-              children: [
-                Transform.scale(scale: 1.0 - 0.06 * press, child: artwork),
-                _buildZenPressHint(progress),
-              ],
-            );
-          },
-        ),
+      // ⚠️ 必须先把当前值捕获到局部量再进闭包：闭包捕获的是变量本身，若直接引用
+      // `result`，builder 首次执行时它已经指向这个 Builder 自己 —— child=自己
+      // 无限套娃，push 播放页即 Stack overflow（表现为"点了迷你条进不去"）。
+      final artwork = result;
+      result = Builder(
+        // 需要一个能"找 RenderObject"的 context 来量封面矩形（见 _rectOf）。
+        // 顺手登记最新 context：返回键退出 Zen 时据此现场量波源（见 PopScope）。
+        builder: (artworkContext) {
+          _zenArtworkCtx = artworkContext;
+          return Listener(
+            onPointerDown: (event) => _onArtworkPointerDown(event, artworkContext),
+            onPointerMove: _onArtworkPointerMove,
+            onPointerUp: (_) => _cancelArtworkPress(),
+            onPointerCancel: (_) => _cancelArtworkPress(),
+            child: AnimatedBuilder(
+              animation: _zenPressController,
+              child: artwork,
+              builder: (context, artwork) {
+                final progress = _zenPressController.value;
+                // 按压时封面轻微内缩（1.0 → 0.94），松手回弹。
+                // 写真封面（allowShrink=false）：缩小会露出底下页面背景（真机反馈），
+                // 按压只保留引导提示动效。
+                final press = allowShrink
+                    ? Curves.easeOut.transform(progress)
+                    : 0.0;
+                return Stack(
+                  // 与 MD3 同口径：Stack 默认 hardEdge 会把封面投影裁掉（投影画在布局盒
+                  // 外侧），必须 Clip.none。提示层是 Positioned.fill，不受影响。
+                  clipBehavior: Clip.none,
+                  children: [
+                    Transform.scale(scale: 1.0 - 0.06 * press, child: artwork),
+                    _buildZenPressHint(progress),
+                  ],
+                );
+              },
+            ),
+          );
+        },
       );
     }
     // Windows 鼠标右键：进入 / 退出「不持窗口全屏的 Zen」（见
@@ -1695,21 +1927,19 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     }
   }
 
-  /// 判断当前歌曲是否为本地歌曲且歌词为 LRC 逐行格式（无字级时间戳）。
+  /// 当前歌词是否为 LRC 行级格式（无字级时间戳）。
   ///
-  /// 这种情况禁用 AppleLyricsView 的间奏点（节奏点）动画：
+  /// 用于禁用 AppleLyricsView 的间奏点（节奏点）动画：
   /// LRC 逐行没有逐字时间戳，行间节奏点与真实节拍不易对齐，
-  /// 本地歌曲的 LRC 又常常缺少精确时间戳，体验较差，禁用后更干净。
+  /// 禁用后体验更干净。
   ///
   /// 若是字级 LRC（含逐字时间戳），行起始时间戳精确到毫秒，
   /// 间奏点可以正常对齐节拍，应保留。
-  /// 在线歌曲 / KRC 逐字歌词 / 静态歌词不受影响。
-  bool _isLocalLrcLyricWithoutWordTiming(dynamic currentSong) {
-    if (currentSong is! Song || currentSong.isOnline) return false;
-    if (_lyricFormat != LyricFormat.lrc) return false;
-    // 任意一行有字级时间戳即视为字级 LRC（混合场景按字级处理）
-    return !_parsedLyricsRaw.any((line) => line.hasWordTiming);
-  }
+  /// KRC / TTML / 静态歌词不受影响。
+  bool get _isLineLevelLrcLyric =>
+      _lyricFormat == LyricFormat.lrc &&
+      // 任意一行有字级时间戳即视为字级 LRC（混合场景按字级处理）
+      !_parsedLyricsRaw.any((line) => line.hasWordTiming);
 
   /// 构建横屏布局的封面内容：style 0/1 用 SpectrumArtwork（白色），style 2 用原封面
   Widget _buildLandscapeArtworkContent(
@@ -1766,6 +1996,8 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     double iconSize = 48.0,
     String? fallbackFilePath,
     Widget? dynamicCover,
+    required bool canGoPrevious,
+    required bool canGoNext,
   }) {
     // 3D 深度封面宿主：开关关闭/生成未完成时内部回退为平面封面，
     // 保留 AM 风格的白底占位与过渡效果；与动态封面互斥由
@@ -1795,6 +2027,15 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
         settledLogicalWidth: width,
         devicePixelRatio: dpr,
       ),
+      // 跟手拖拽翻转：三个封面渲染点共用本入口，行为自动一致。
+      swipeEnabled: !kTvBuild && !widget.dockMode,
+      canGoPrevious: canGoPrevious,
+      canGoNext: canGoNext,
+      onSwipeCommit: _onCoverSwipeCommit,
+      // 卡背：目标邻居的静态封面（翻过 90° 直接看到下一首）。
+      swipeTargetBuilder: _buildSwipeTargetArtwork,
+      // 翻转中把「静止方盒投影」淡出，避免侧立时仍是一整块方形阴影。
+      flipActive: _coverFlipActive,
       child: dynamicCover == null
           ? artwork
           : Stack(
@@ -1821,21 +2062,28 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     required String? fallbackFilePath,
     double iconSize = 48.0,
   }) {
-    return PlayerCoverShadow.wrap(
-      shadowColor: colorScheme.shadow,
+    final cover = Stack(
       // 不在这层裁圆角：改由 CoverFlipCrossfade 每层各自「先裁圆角再旋转」，
       // 旋转中封面（透视近端放大）探出静止边界时不会被裁掉上下边缘。
       // Stack 用 Clip.none：投影画在盒外，默认 hardEdge 会把它裁掉
       // （PlayerCoverShadow 契约）。
-      child: Stack(
-        clipBehavior: Clip.none,
-        fit: StackFit.expand,
-        children: [
-          _buildCrossfadeArtwork(
+      clipBehavior: Clip.none,
+      fit: StackFit.expand,
+      children: [
+        // 封面跟手翻转的边界：只有真正存在邻居的一侧才允许拖拽提交，
+        // 口径与 MD 页 _pagerNeighborSong 一致（loopMode == all 才首尾绕回）。
+        Selector<PlayerProvider, ({bool canGoPrevious, bool canGoNext})>(
+          selector: (_, p) => (
+            canGoPrevious: _swipeNeighborSong(p, -1) != null,
+            canGoNext: _swipeNeighborSong(p, 1) != null,
+          ),
+          builder: (context, bounds, _) => _buildCrossfadeArtwork(
             artworkUri,
             colorScheme,
             iconSize: iconSize,
             fallbackFilePath: fallbackFilePath,
+            canGoPrevious: bounds.canGoPrevious,
+            canGoNext: bounds.canGoNext,
             dynamicCover:
                 (currentSong is Song && currentSong.isOnline)
                     ? DynamicCoverView(
@@ -1844,8 +2092,25 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
                       )
                     : null,
           ),
-        ],
+        ),
+      ],
+    );
+    // 翻转窗口把阴影淡出（160ms 补间）：投影画的是静止方盒轮廓，封面绕纵轴
+    // 收窄到侧立时它仍是一整块方形 → 真机穿帮。child 复用同一个 cover 实例，
+    // 封面树不重建；每帧只更新 DecoratedBox 的 boxShadow。
+    return ValueListenableBuilder<bool>(
+      valueListenable: _coverFlipActive,
+      builder: (context, flipping, child) => TweenAnimationBuilder<double>(
+        tween: Tween<double>(end: flipping ? 0.0 : 1.0),
+        duration: const Duration(milliseconds: 160),
+        curve: Curves.easeOut,
+        builder: (context, shadowScale, _) => PlayerCoverShadow.wrap(
+          shadowColor: colorScheme.shadow,
+          intensityScale: shadowScale,
+          child: child!,
+        ),
       ),
+      child: cover,
     );
   }
 
@@ -2039,10 +2304,13 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     //    导致松手 settleToFull 被吞掉、动画状态错乱。
     route.beginDrag();
     route.controller.value = 1.0;
-    // 完整收起距离：拖拽模式用 MiniPlayer 顶端；tap 模式（点击进入）用全局
-    // 记录的 MiniPlayer 顶端，让播放页沿「展开路径」原路下滑（1:1 跟手）
-    final total = route.dragOriginTop ?? playerDragOriginTop;
-    _topBarDragTotal = total > 0 ? total : MediaQuery.sizeOf(context).height;
+    // 完整收起距离 = 迷你条顶端，且必须是**当前视口**口径：[panelAnchorFor]
+    // 会丢弃「进栈那一刻」的旧视口快照、改用迷你条重登记过的全局锚点。
+    // 转屏 / 分屏 / 小窗 resize 之后仍按旧值算，收起落点就会停在屏中间
+    // （横屏点迷你条进播放页 → 转竖屏 → 下拉收起，实测落在屏高 1/3 处）。
+    final double viewportHeight = MediaQuery.sizeOf(context).height;
+    final double total = route.panelAnchorFor(viewportHeight).top;
+    _topBarDragTotal = total > 0 ? total : viewportHeight;
     route.topBarDragging = true;
     route.topBarDragTotal = _topBarDragTotal;
     _topBarDragDistance = 0.0;
@@ -2343,11 +2611,37 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     // 转场取证用：整页 build 次数。**期望 0** —— 页面应当作为 `child` 被复用、
     // 只由面板裁剪，转场期间整页不该重建。
     coverMorphCountPageBuild(this);
-    return ZenChromeDim(
+    final page = ZenChromeDim(
       notifier: _zenChromeDim,
       child: Builder(
         builder: (context) => _tvMenuKeyScope(context, _buildPlayer(context)),
       ),
+    );
+    // Zen 切换波：页面内容**常驻**包一层 RepaintBoundary，覆盖层只是 Stack 的
+    // 一个条件子项。
+    //
+    // ⚠️ 树形状必须稳定：若"波激活时包 Stack、结束拆掉"，页面子树（流光背景/
+    // 写真轮播等）会因形状变化被整体卸载重建 —— FlowingBackground 重新挂载后
+    // 调色板从兜底色起步，表现为「进出 Zen 后背景闪一下」「退出后背景是兜底色」
+    // （真机反馈，开不开动态流光都会闪，因为写真/频谱背景同样被重建）。
+    // 覆盖层透明处直接透出底下实时的新页面（歌词/流光全程不冻结）。
+    final waveImage = _zenWaveImage;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        RepaintBoundary(key: _zenPageBoundary, child: page),
+        if (waveImage != null)
+          WaveReveal(
+            key: ValueKey<ui.Image>(waveImage),
+            image: waveImage,
+            source: _zenWaveSource,
+            style: _zenWaveStyle,
+            // 进（_zenMode=true）从封面扩散出去；退（false）反向回缩到封面
+            // —— 源点是退出后封面所在的矩形（见 _exitZenMode 的 post-frame 量取）。
+            reverse: !_zenMode,
+            onDone: _clearZenWave,
+          ),
+      ],
     );
   }
 
@@ -2418,7 +2712,9 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
             // 车机面板常驻，返回键不得让它消失
             if (widget.dockMode) return;
             if (_zenMode) {
-              _exitZenMode();
+              // 返回键退出 Zen 也走波；回缩终点（目的屏里封面的矩形）由
+              // 回缩终点在新布局落地后量（见 _exitZenMode 的 post-frame）。
+              _exitZenMode(wave: true);
               return;
             }
             // 播放列表编辑模式优先：返回键先退出编辑，而不是收起播放页
@@ -2506,65 +2802,81 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
         resizeToAvoidBottomInset: false,
         body: Stack(
           children: [
-            // 1. 模糊封面背景层（Apple Music 风格，带淡入淡出）
+            // 1~3.5. 背景总层：模糊封面 / 流光背景 + 半透明蒙版 + 歌手写真 +
+            //    频谱背景，收进**一个** RepaintBoundary：
+            //    - 原模糊层自带的那层 boundary 并入本层，避免双层嵌套冗余；
+            //    - 同时承担「背景增透」采样源（key = [_bgLayerKey]）：赋色方式
+            //      为 backgroundBloom 时 AppleLyricsView 从该层低频抓取当前行
+            //      背后的背景条带，提亮加饱和后映射进字内渐变。
             //    开启动态流光时不渲染模糊层，只保留流光层（省 GPU 且画面更纯净）
             // RepaintBoundary 隔离：tab 切换/控制栏 setState/评论透传这类整页重建不再连坐本层重绘
-            if (!LyricPreferences.instance.useFlowingBackground)
-              RepaintBoundary(
-                child: _buildCrossfadeBlurredBackground(
-                  currentSong.artworkUri,
-                  fallbackFilePath: currentSong.localPath,
-                  sigma: amBlur,
-                ),
+            RepaintBoundary(
+              key: _bgLayerKey,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (!LyricPreferences.instance.useFlowingBackground)
+                    _buildCrossfadeBlurredBackground(
+                      currentSong.artworkUri,
+                      fallbackFilePath: currentSong.localPath,
+                      sigma: amBlur,
+                    ),
+                  // 动态流光背景层（可选，从专辑封面提取色彩流动）
+                  //    playingStream 必须传：本页会被封面形变系统缓存复用（pageBuilds=1），
+                  //    播放/暂停不重建整页 → 只给 isPlaying 快照会让流光永远停在挂载那
+                  //    一刻的播放态（真机 [FlowingBG] 日志实证 t 恒 0.00、驱动从未 bind）。
+                  if (LyricPreferences.instance.useFlowingBackground)
+                    FlowingBackground(
+                      artworkUrl: currentSong.artworkUri,
+                      isPlaying: playerProvider.isPlaying,
+                      playingStream: AudioService().playingStream,
+                    ),
+                  // 半透明蒙版 rgba(0,0,0,0.35)
+                  _buildDarkOverlay(),
+                  // 写真统一放在页面背景层：紧凑手机覆盖顶栏到控制区，避免 PageView 与相邻区域的裁剪边缘露线。
+                  // 宽屏仍只铺左栏，并在左右外缘羽化；两种布局共用控制器与加载状态。
+                  // 紧凑手机另加一层门控：**只在本页为封面页时显示**（见
+                  // [_buildCompactPhotoBackground]）——滑到歌单/歌词/评论后歌词页不该
+                  // 再有写真背景。
+                  if (getScreenType(MediaQuery.sizeOf(context).width) ==
+                      ScreenType.compact)
+                    _buildCompactPhotoBackground(photoOpacity),
+                  if (getScreenType(MediaQuery.sizeOf(context).width) !=
+                      ScreenType.compact)
+                    // 滤镜/遮罩整页绘制，只限制图片内容宽度；不在 40% 分栏处裁剪滤镜层。
+                    ListenableBuilder(
+                      listenable: _photoController,
+                      builder: (context, _) => _photoCoverActive
+                          ? RepaintBoundary(
+                              child: IgnorePointer(
+                                child: AmArtistPhotoCover(
+                                  currentUrl: _photoController.currentUrl,
+                                  feather: AmPhotoFeather.rightEdge,
+                                  photoWidthFraction: 0.4,
+                                  opacity: photoOpacity,
+                                ),
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  // 频谱背景层：style=2 时显示底部条形频谱图（播放时淡入、暂停时淡出）
+                  if (_spectrumEnabled && _spectrumStyle == 2)
+                    SpectrumBackground(
+                      color: _spectrumColor,
+                      opacity: _spectrumBgOpacity,
+                      heightRatio: _spectrumBgHeight,
+                      visible: playerProvider.isPlaying,
+                    ),
+                ],
               ),
-            // 2. 动态流光背景层（可选，从专辑封面提取色彩流动）
-            //    playingStream 必须传：本页会被封面形变系统缓存复用（pageBuilds=1），
-            //    播放/暂停不重建整页 → 只给 isPlaying 快照会让流光永远停在挂载那
-            //    一刻的播放态（真机 [FlowingBG] 日志实证 t 恒 0.00、驱动从未 bind）。
-            if (LyricPreferences.instance.useFlowingBackground)
-              FlowingBackground(
-                artworkUrl: currentSong.artworkUri,
-                isPlaying: playerProvider.isPlaying,
-                playingStream: AudioService().playingStream,
-              ),
-            // 3. 半透明蒙版 rgba(0,0,0,0.35)
-            _buildDarkOverlay(),
-            // 写真统一放在页面背景层：紧凑手机覆盖顶栏到控制区，避免 PageView 与相邻区域的裁剪边缘露线。
-            // 宽屏仍只铺左栏，并在左右外缘羽化；两种布局共用控制器与加载状态。
-            // 紧凑手机另加一层门控：**只在本页为封面页时显示**（见
-            // [_buildCompactPhotoBackground]）——滑到歌单/歌词/评论后歌词页不该
-            // 再有写真背景。
-            if (getScreenType(MediaQuery.sizeOf(context).width) ==
-                ScreenType.compact)
-              Positioned.fill(
-                child: _buildCompactPhotoBackground(photoOpacity),
-              ),
-            if (getScreenType(MediaQuery.sizeOf(context).width) !=
-                ScreenType.compact)
-              // 滤镜/遮罩整页绘制，只限制图片内容宽度；不在 40% 分栏处裁剪滤镜层。
-              Positioned.fill(
-                child: ListenableBuilder(
-                  listenable: _photoController,
-                  builder: (context, _) => _photoCoverActive
-                      ? RepaintBoundary(
-                          child: IgnorePointer(
-                            child: AmArtistPhotoCover(
-                              currentUrl: _photoController.currentUrl,
-                              feather: AmPhotoFeather.rightEdge,
-                              photoWidthFraction: 0.4,
-                              opacity: photoOpacity,
-                            ),
-                          ),
-                        )
-                      : const SizedBox.shrink(),
-                ),
-              ),
+            ),
             // MD3Music fork v51：宽屏写真生效时封面盒不渲染，弹幕宿主随之消失
             // （真机实测：横屏开歌手写真无弹幕，竖屏正常——竖屏封面 tab 的
             // 封面盒仍在）。在写真层之上补一个左栏区域（与写真
             // photoWidthFraction 同宽）的弹幕层；写真关闭时封面盒路径自带
             // 弹幕，两层互斥不会双份。不套 IgnorePointer：弹幕绘制层本身无
             // 手势，右下角"发弹幕"按钮需要可点（与竖屏行为一致）。
+            // 弹幕宿主留在背景总层之外（左栏定位语义不受影响）。
             if (getScreenType(MediaQuery.sizeOf(context).width) !=
                 ScreenType.compact)
               Positioned.fill(
@@ -2580,14 +2892,6 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
                         )
                       : const SizedBox.shrink(),
                 ),
-              ),
-            // 3.5 频谱背景层：style=2 时显示底部条形频谱图（播放时淡入、暂停时淡出）
-            if (_spectrumEnabled && _spectrumStyle == 2)
-              SpectrumBackground(
-                color: _spectrumColor,
-                opacity: _spectrumBgOpacity,
-                heightRatio: _spectrumBgHeight,
-                visible: playerProvider.isPlaying,
               ),
             // 4. 主体内容（保留原有 compact/landscape/expanded 三套布局）
             ResponsiveLayout(
@@ -2804,16 +3108,17 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
                                   playbackNotReady:
                                       playerProvider.isPlaybackNotReady,
                                   forceDarkBackground: true,
-                                  // 本地歌曲 + LRC 逐行歌词：禁用间奏点（节奏点）
-                                  enableInterludeDots:
-                                      !_isLocalLrcLyricWithoutWordTiming(
-                                        currentSong,
-                                      ),
+                                  // LRC 行级歌词：禁用间奏点（节奏点）
+                                  enableInterludeDots: !_isLineLevelLrcLyric,
                                   doubleTapToJump: lyricDoubleTap,
                                   accentColor: _lyricAccentColor,
+                                  // 「背景增透」采样源：背景总层 boundary
+                                  backgroundSamplerKey: _bgLayerKey,
                                   // 歌曲 BPM（本地标签/接口，可空）：用于快慢歌辉光阈值
                                   songBpm: currentSong?.bpm,
                                   onSeek: _seekToLyric,
+                                  // 选择模式激活时隐藏歌词角标按钮（与操作栏重叠）
+                                  onSelectionActiveChanged: _onLyricSelectionActive,
                                 );
                               },
                             ),
@@ -3216,16 +3521,17 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
                                                       playerProvider
                                                           .isPlaybackNotReady,
                                                   forceDarkBackground: true,
-                                                  // 本地歌曲 + LRC 逐行歌词：禁用间奏点（节奏点）
-                                                  enableInterludeDots:
-                                                      !_isLocalLrcLyricWithoutWordTiming(
-                                                        currentSong,
-                                                      ),
+                                                  // LRC 行级歌词：禁用间奏点（节奏点）
+                                                  enableInterludeDots: !_isLineLevelLrcLyric,
                                                   doubleTapToJump:
                                                       lyricDoubleTap,
                                                   accentColor:
                                                       _lyricAccentColor,
+                                                  // 「背景增透」采样源：背景总层 boundary
+                                                  backgroundSamplerKey: _bgLayerKey,
                                                   onSeek: _seekToLyric,
+                                                  // 选择模式激活时隐藏歌词角标按钮（与操作栏重叠）
+                                                  onSelectionActiveChanged: _onLyricSelectionActive,
                                                 ),
                                           ),
                                         ),
@@ -3595,16 +3901,17 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
                                                       playerProvider
                                                           .isPlaybackNotReady,
                                                   forceDarkBackground: true,
-                                                  // 本地歌曲 + LRC 逐行歌词：禁用间奏点（节奏点）
-                                                  enableInterludeDots:
-                                                      !_isLocalLrcLyricWithoutWordTiming(
-                                                        currentSong,
-                                                      ),
+                                                  // LRC 行级歌词：禁用间奏点（节奏点）
+                                                  enableInterludeDots: !_isLineLevelLrcLyric,
                                                   doubleTapToJump:
                                                       lyricDoubleTap,
                                                   accentColor:
                                                       _lyricAccentColor,
+                                                  // 「背景增透」采样源：背景总层 boundary
+                                                  backgroundSamplerKey: _bgLayerKey,
                                                   onSeek: _seekToLyric,
+                                                  // 选择模式激活时隐藏歌词角标按钮（与操作栏重叠）
+                                                  onSelectionActiveChanged: _onLyricSelectionActive,
                                                 ),
                                           ),
                                         ),
@@ -4969,6 +5276,9 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
     return Stack(
       children: [
         Positioned.fill(child: child),
+        // 选择模式激活：两枚角标按钮（伴唱/翻译）都会与底部操作栏重叠，
+        // 一并隐藏（view 的 onSelectionActiveChanged 回调驱动）
+        if (!_lyricSelectionActive) ...[
         // 伴唱按钮：翻译按钮**上方**（伴唱是歌词页的第二个开关）。
         // 叠在翻译按钮之上，两枚按钮沿右边缘竖排（伴唱在上、翻译在下）。
         Positioned(
@@ -4990,7 +5300,9 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
           child: ListenableBuilder(
             listenable: LyricPreferences.instance,
             builder: (context, _) {
-              if (_zenMode || (!_hasTranslation && !_hasRoma)) {
+              if (_zenMode ||
+                  _lyricSelectionActive ||
+                  (!_hasTranslation && !_hasRoma)) {
                 return const SizedBox.shrink();
               }
               final on = LyricPreferences.instance.showTranslation;
@@ -5024,8 +5336,16 @@ class _AmStyleFullPlayerState extends State<AmStyleFullPlayer>
             },
           ),
         ),
+        ],
       ],
     );
+  }
+
+  /// 歌词选择模式激活回调（AppleLyricsView）。
+  void _onLyricSelectionActive(bool active) {
+    if (mounted && _lyricSelectionActive != active) {
+      setState(() => _lyricSelectionActive = active);
+    }
   }
 
   /// 长按翻译按钮：在「翻译」与「罗马音」显示模式间切换。

@@ -169,17 +169,23 @@ class _LocalArtworkImageState extends State<LocalArtworkImage> {
 
   Widget _placeholder(ColorScheme colorScheme, {bool loading = false}) {
     final isFill = widget.size == double.infinity;
+    // 无封面占位跟随主题莫奈色：底色用 primaryContainer（动态主色的浅容器），
+    // 音符用 primary；此前固定 surfaceContainerHighest 灰底 + 灰音符，开启
+    // 封面取色/莫奈取色后一整列灰格子不跟主题（本地音乐页最明显）。
+    // 加载中的沙漏保持低调用 onSurfaceVariant，与加载完成态区分。
     return Container(
       width: isFill ? double.infinity : widget.size,
       height: isFill ? double.infinity : widget.size,
       decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest,
+        color: colorScheme.primaryContainer,
         borderRadius: BorderRadius.circular(widget.borderRadius),
       ),
       child: Icon(
         loading ? Icons.hourglass_empty : Icons.music_note,
         size: isFill ? 40 : widget.size * 0.4,
-        color: colorScheme.onSurfaceVariant,
+        color: loading
+            ? colorScheme.onSurfaceVariant
+            : colorScheme.primary,
       ),
     );
   }

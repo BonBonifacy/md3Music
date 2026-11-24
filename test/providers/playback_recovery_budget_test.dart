@@ -7,13 +7,13 @@ void main() {
     test('对单首歌最多发起三次自动恢复，并逐步退避', () {
       final budget = PlaybackRecoveryBudget();
 
-      expect(budget.nextDelay, const Duration(seconds: 30));
+      expect(budget.nextDelay(), const Duration(seconds: 30));
       expect(budget.tryConsume('song-a'), isTrue);
-      expect(budget.nextDelay, const Duration(seconds: 60));
+      expect(budget.nextDelay(), const Duration(seconds: 60));
       expect(budget.tryConsume('song-a'), isTrue);
-      expect(budget.nextDelay, const Duration(seconds: 120));
+      expect(budget.nextDelay(), const Duration(seconds: 120));
       expect(budget.tryConsume('song-a'), isTrue);
-      expect(budget.nextDelay, isNull);
+      expect(budget.nextDelay(), isNull);
       expect(budget.tryConsume('song-a'), isFalse);
     });
 
@@ -24,7 +24,37 @@ void main() {
       expect(budget.attempts, 1);
       budget.reset('song-b');
       expect(budget.attempts, 0);
-      expect(budget.nextDelay, const Duration(seconds: 30));
+      expect(budget.nextDelay(), const Duration(seconds: 30));
+    });
+
+    test('前台档用秒级快速退避（与后台长退避分开）', () {
+      final budget = PlaybackRecoveryBudget();
+      // 未消耗时：前台 1s、后台 30s，节奏明显不同。
+      expect(budget.nextDelay(background: false), const Duration(seconds: 1));
+      expect(budget.nextDelay(), const Duration(seconds: 30));
+      // 默认 maxAttempts=3：三次尝试后耗尽。
+      expect(budget.tryConsume('song-a'), isTrue);
+      expect(budget.nextDelay(background: false), const Duration(seconds: 2));
+      expect(budget.tryConsume('song-a'), isTrue);
+      expect(budget.nextDelay(background: false), const Duration(seconds: 4));
+      expect(budget.tryConsume('song-a'), isTrue);
+      expect(budget.nextDelay(background: false), isNull);
+      expect(budget.nextDelay(), isNull);
+    });
+
+    test('未指定前台档时回退到后台档（注入预算行为不变）', () {
+      final budget = PlaybackRecoveryBudget(
+        backoff: [Duration(seconds: 5), Duration(seconds: 10)],
+      );
+      expect(budget.foregroundBackoff, [
+        Duration(seconds: 5),
+        Duration(seconds: 10),
+      ]);
+      expect(budget.tryConsume('song-a'), isTrue);
+      expect(
+        budget.nextDelay(background: false),
+        const Duration(seconds: 10),
+      );
     });
   });
 

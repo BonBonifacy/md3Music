@@ -4,6 +4,7 @@ import '../../core/remote/tv_scroll_region.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dpad/dpad.dart';
 import 'package:material_ui/material_ui.dart';
+import '../../widgets/app_empty_state.dart';
 import 'package:provider/provider.dart';
 import 'package:m3e_core/m3e_core.dart';
 import '../../widgets/md3_pull_to_refresh.dart';
@@ -81,28 +82,14 @@ class _ChartsPageState extends State<ChartsPage> {
       selector: (_, kugou) => kugou.rankList,
       builder: (context, ranks, _) {
         if (ranks == null || ranks.ranks.isEmpty) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.trending_up,
-                  size: 48,
-                  color: cs.onSurfaceVariant.withValues(alpha: 0.5),
-                ),
-                const Gap(AppSpacing.md),
-                Text(
-                  '暂无排行榜数据',
-                  style: tt.titleMedium?.copyWith(color: cs.onSurfaceVariant),
-                ),
-                const Gap(AppSpacing.lg),
-                FilledButton.tonal(
-                  onPressed: () => context.read<KugouProvider>().getRankList(
-                    forceRefresh: true,
-                  ),
-                  child: const Text('重试'),
-                ),
-              ],
+          return AppEmptyState(
+            icon: Icons.trending_up,
+            title: '暂无排行榜数据',
+            action: FilledButton.tonal(
+              onPressed: () => context.read<KugouProvider>().getRankList(
+                forceRefresh: true,
+              ),
+              child: const Text('重试'),
             ),
           );
         }
@@ -132,7 +119,7 @@ class _ChartsPageState extends State<ChartsPage> {
                     rankName: rank.name),
               );
               final row = Container(
-                margin: const EdgeInsets.only(bottom: 10),
+                margin: const EdgeInsets.only(bottom: AppSpacing.sm),
                 decoration: BoxDecoration(
                   borderRadius: AppRadius.lgAll,
                   color: cs.surfaceContainerLow,
@@ -237,30 +224,14 @@ class _ChartsPageState extends State<ChartsPage> {
       selector: (_, kugou) => kugou.rankList,
       builder: (context, ranks, _) {
         if (ranks == null || ranks.ranks.isEmpty) {
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.trending_up,
-                  size: 48,
-                  color: cs.onSurfaceVariant.withValues(alpha: 0.5),
-                ),
-                const Gap(AppSpacing.md),
-                Text(
-                  '暂无排行榜数据',
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleMedium?.copyWith(color: cs.onSurfaceVariant),
-                ),
-                const Gap(AppSpacing.lg),
-                FilledButton.tonal(
-                  onPressed: () => context.read<KugouProvider>().getRankList(
-                    forceRefresh: true,
-                  ),
-                  child: const Text('重试'),
-                ),
-              ],
+          return AppEmptyState(
+            icon: Icons.trending_up,
+            title: '暂无排行榜数据',
+            action: FilledButton.tonal(
+              onPressed: () => context.read<KugouProvider>().getRankList(
+                forceRefresh: true,
+              ),
+              child: const Text('重试'),
             ),
           );
         }
@@ -341,7 +312,7 @@ class _RankGridCard extends StatelessWidget {
                     : _buildPlaceholder(colorScheme),
               ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(10, AppSpacing.sm, 10, AppSpacing.sm),
+                padding: const EdgeInsets.fromLTRB(AppSpacing.md, AppSpacing.sm, AppSpacing.md, AppSpacing.sm),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -419,7 +390,6 @@ class _RankSongPageState extends State<_RankSongPage> {
   @override
   Widget build(BuildContext context) {
     final tt = Theme.of(context).textTheme;
-    final cs = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -434,35 +404,19 @@ class _RankSongPageState extends State<_RankSongPage> {
               selector: (_, kugou) => kugou.rankSongs,
               builder: (context, songs, _) {
                 if (songs.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.music_off,
-                          size: 48,
-                          color: cs.onSurfaceVariant.withValues(alpha: 0.5),
-                        ),
-                        const Gap(AppSpacing.md),
-                        Text(
-                          '暂无数据',
-                          style: tt.titleMedium?.copyWith(
-                            color: cs.onSurfaceVariant,
-                          ),
-                        ),
-                        const Gap(AppSpacing.lg),
-                        FilledButton.tonal(
-                          onPressed: () async {
-                            setState(() => _isLoading = true);
-                            await context.read<KugouProvider>().getRankSongs(
-                              rankId: widget.rankId,
-                              forceRefresh: true,
-                            );
-                            if (mounted) setState(() => _isLoading = false);
-                          },
-                          child: const Text('重试'),
-                        ),
-                      ],
+                  return AppEmptyState(
+                    icon: Icons.music_off,
+                    title: '暂无数据',
+                    action: FilledButton.tonal(
+                      onPressed: () async {
+                        setState(() => _isLoading = true);
+                        await context.read<KugouProvider>().getRankSongs(
+                          rankId: widget.rankId,
+                          forceRefresh: true,
+                        );
+                        if (mounted) setState(() => _isLoading = false);
+                      },
+                      child: const Text('重试'),
                     ),
                   );
                 }
@@ -470,10 +424,12 @@ class _RankSongPageState extends State<_RankSongPage> {
                   memoryKey: 'tv/charts-rank-songs',
                   horizontalEdge: DpadEdgeBehavior.leave,
                   child: ListView.builder(
+                    // 左右补 6：SongListItem 自带 10dp 内衬，6+10=16 才是页面边距；
+                    // 原来给 16 会变成 26（双重缩进），与其它列表页不一致。
                     padding: EdgeInsets.fromLTRB(
+                      6,
                       AppSpacing.lg,
-                      AppSpacing.lg,
-                      AppSpacing.lg,
+                      6,
                       AppSpacing.lg + MediaQuery.paddingOf(context).bottom,
                     ),
                     itemCount: songs.length,

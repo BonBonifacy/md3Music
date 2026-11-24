@@ -101,6 +101,8 @@ class WindowsSettingsRuntime {
         .getSecondaryPlayerOnPrimary();
     kHideNavBarOnSecondaryPages.value = await repo
         .getHideNavBarOnSecondaryPages();
+    kNavBarScrollCollapseEnabled.value = await repo
+        .getNavBarScrollCollapseEnabled();
     final isPad =
         device?.deviceType == DeviceType.pad ||
         (device?.deviceType != DeviceType.phone &&

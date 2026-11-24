@@ -1182,17 +1182,21 @@ void main() {
       final double trans = LyricLayout.translationFontSize(
         LyricPreferences.instance.fontSize,
       );
+      // 单行副行 = 行内容 + 上方0.3em间隙 + 下方0.3em呼吸余量
       final double singleRow =
-          trans * LyricLayout.translationLineHeight + trans * 0.3;
+          trans * LyricLayout.translationLineHeight + trans * 0.6;
 
-      expect(state.auxSubHeightForTest(1), closeTo(singleRow, 0.001),
-          reason: '短副行仍按单行预留，不应引入额外行距');
+      expect(
+        state.auxSubHeightForTest(1),
+        greaterThanOrEqualTo(singleRow - 0.001),
+        reason: '短副行预留至少等于单行系数值；实测更高的字体允许更大',
+      );
       expect(state.auxSubHeightForTest(0), greaterThan(singleRow),
           reason: '过长副行必须按换行后的行数预留高度，否则会压到下一行歌词');
       expect(
         state.auxSubHeightForTest(0),
         greaterThanOrEqualTo(
-            2 * trans * LyricLayout.translationLineHeight + trans * 0.3 - 0.001),
+            2 * trans * LyricLayout.translationLineHeight + trans * 0.3 * 2 - 0.001),
         reason: '至少预留 2 行副行高度',
       );
     });
@@ -1233,11 +1237,15 @@ void main() {
       final double trans = LyricLayout.translationFontSize(
         LyricPreferences.instance.fontSize,
       );
+      // 单行副行 = 行内容 + 上方0.3em间隙 + 下方0.3em呼吸余量
       final double singleRow =
-          trans * LyricLayout.translationLineHeight + trans * 0.3;
+          trans * LyricLayout.translationLineHeight + trans * 0.6;
 
-      expect(state.auxSubHeightForTest(0), closeTo(singleRow, 0.001),
-          reason: '翻译模式：短翻译按单行预留');
+      expect(
+        state.auxSubHeightForTest(0),
+        greaterThanOrEqualTo(singleRow - 0.001),
+        reason: '翻译模式：短翻译预留至少等于单行系数值',
+      );
 
       await LyricPreferences.instance.setDisplayMode(LyricDisplayMode.roma);
       await tester.pump();

@@ -33,6 +33,7 @@ import '../recognition/song_recognition_page.dart';
 import '../search/search_page.dart';
 import '../album/album_detail_page.dart';
 import '../album/new_album_browse_page.dart';
+import '../../widgets/album_favorite_button.dart';
 import '../../widgets/compact_album_grid.dart';
 import '../../widgets/playlist_cover_hero.dart';
 import '../../core/utils/app_toast.dart';
@@ -44,7 +45,14 @@ const double _kActionButtonWidth = 36.0;
 const double _kActionButtonHeight = 40.0;
 
 /// 补回按钮收窄的宽度，让最右那枚图标与屏幕边缘的距离保持不变。
+///
+/// **这个 6 是推导值，不是随手写的离格数**：按钮宽 36 比 MD3 默认 48 窄了 12，
+/// 右半边因此内缩 6；补 6 才能让图标的热区外缘仍落在原来的位置。
+/// 改成 AppSpacing.sm(8) 会让最右侧图标整体右移 2，与其它页面的顶栏右缘不齐。
 const double _kActionTrailingGap = 6.0;
+
+/// 问候胶囊上浮/下潜的位移幅度（与 AppSpacing.sm 同值，8）。
+const double _kGreetingFloat = AppSpacing.sm;
 
 class DiscoverPage extends StatefulWidget {
   const DiscoverPage({super.key});
@@ -148,7 +156,7 @@ class _DiscoverPageState extends State<DiscoverPage>
   static const double _kGreetingPillSize = AppCapsule.badgeSize;
 
   /// 出现 / 消失时的纵向位移幅度：出现自下方该距离浮起到位，消失镜像下潜。
-  static const double _kGreetingFloat = 10;
+
 
   /// 本次 App 运行内是否已弹出过。发现页会随 tab 切换反复重建，静态标记才能让
   /// 胶囊只在「打开 App 拿到昵称」那一刻弹一次。
@@ -508,10 +516,20 @@ class _DiscoverPageState extends State<DiscoverPage>
                   ),
                 ),
                 child: albums.isEmpty
-                    ? const Padding(padding: EdgeInsets.all(16), child: Text('暂无新碟'))
+                    ? _buildInlineEmpty(context, '暂无新碟')
                     : CompactAlbumGrid(
                         albums: albums,
-                        maxItems: 8,
+                        // 4 个（原 8）且强制单列 = 4 行。
+                        // 宽屏这一块与「新歌速递」（4 行单列）并排；若按宽度
+                        // 自适应成 2 列，4 个只排 2 行，右半边空一大块、与邻居
+                        // 参差不齐（用户指出过）。完整列表在标题右侧「›」里。
+                        maxItems: 4,
+                        columns: 1,
+                        // 行尾收藏按钮：与歌曲行的红心同规格（44 触控盒、18 图标、
+                        // 已收藏用 error 色实心）。状态走本地缓存，列表不为画一颗心
+                        // 去请求服务端。
+                        favoriteBuilder: (ctx, album) =>
+                            AlbumFavoriteButton(album: album),
                         heroTags: [for (var i = 0; i < albums.length; i++)
                           firstId[albums[i].id] == i ? albumCoverHeroTag(albums[i].id) : null],
                         regionKey: 'tv/discover-new-albums',
@@ -584,6 +602,10 @@ class _DiscoverPageState extends State<DiscoverPage>
         width: _kActionButtonWidth,
         height: _kActionButtonHeight,
       ),
+      // horizontal 只能是 6，**不能换成 AppSpacing.sm(8)**：
+      // 按钮外框被 constraints 钉死 36 宽，padding 16 时留给 24dp 图标的
+      // 布局宽只剩 20（原先 12 → 正好 24）。换成 8 会把图标挤变形。
+      // vertical 8 会被 visualDensity 的 dy 抵消，渲染上等于 0。
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
       icon: Icon(icon),
       onPressed: onPressed,
@@ -943,7 +965,7 @@ class _DailyRecommendDetailPageState extends State<_DailyRecommendDetailPage> {
               selector: (_, kugou) => kugou.recommendSongs,
               builder: (context, recommendSongs, _) {
                 final songs = recommendSongs.map((e) => e.toSong()).toList();
-                if (songs.isEmpty) return const Center(child: Text('暂无数据'));
+                if (songs.isEmpty) return _buildInlineEmpty(context, '暂无数据');
                 final hasCurrentSong = context.select<PlayerProvider, bool>(
                   (player) => player.currentSong != null,
                 );
@@ -1253,7 +1275,7 @@ class _HomeDiscoverDetailPageState extends State<_HomeDiscoverDetailPage> {
                 selector: (_, kugou) => kugou.homeDiscoverSongs,
                 builder: (context, details, _) {
                   final songs = details.map((e) => e.toSong()).toList();
-                  if (songs.isEmpty) return const Center(child: Text('暂无数据'));
+                  if (songs.isEmpty) return _buildInlineEmpty(context, '暂无数据');
                   final hasCurrentSong = context.select<PlayerProvider, bool>(
                     (player) => player.currentSong != null,
                   );
@@ -1632,6 +1654,35 @@ class _NewSongDetailPageState extends State<_NewSongDetailPage> {
   }
 }
 
+/// 发现页内的行内空态（区块级 / 详情页级共用一套规格）。
+///
+/// **为什么抽出来**：这个文件里原本有四套互不相同的空态——
+/// 裸 `Center(Text('暂无数据'))`（946 / 1256）、裸 `Padding(all:16) + Text`（511）、
+/// 图标+标题+重试（1504 附近）、图标+标题+异常原文+重试（536 附近）。
+/// 同一个页面上「没有内容」有四种长相，是「不够高级」最直接的来源之一。
+///
+/// 这里只统一**行内**那三处（轻量、不占满屏）；整页级的错误态保持原样不动，
+/// 因为它的重试回调与骨架屏时序是耦合的。
+Widget _buildInlineEmpty(BuildContext context, String text) {
+  final cs = Theme.of(context).colorScheme;
+  return Padding(
+    padding: const EdgeInsets.symmetric(
+      horizontal: AppSpacing.lg,
+      vertical: AppSpacing.xl,
+    ),
+    child: Center(
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              // 空态是「没有内容」的说明，压到 onSurfaceVariant 一档，
+              // 不要用默认正文色抢过真实内容。
+              color: cs.onSurfaceVariant,
+            ),
+      ),
+    ),
+  );
+}
+
 /// 发现页区块容器：标题行 + 内容。
 /// 标题行右侧可放额外 widget（如"查看更多"按钮）。
 class _SectionBlock extends StatelessWidget {
@@ -1652,9 +1703,16 @@ class _SectionBlock extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
+          // 区块之间用 xl(24) 拉开、标题到内容用 sm(8) 收紧：
+          // 原来上下都是 md(12)/sm(8)，五个区块彼此等距 = 没有分组，
+          // 整页读起来是一条不间断的流。收紧标题与内容的关系、放大区块之间的关系，
+          // 分组才立得住。
+          //
+          // **不能在宽屏改成「首块小、其余大」**：DiscoverSectionsSliver 在宽屏
+          // 用 SliverCrossAxisGroup 把相邻两块并排，两块的顶部必须同高，否则并排会错位。
           padding: const EdgeInsets.fromLTRB(
             AppSpacing.lg,
-            AppSpacing.md,
+            AppSpacing.xl,
             AppSpacing.lg,
             AppSpacing.sm,
           ),

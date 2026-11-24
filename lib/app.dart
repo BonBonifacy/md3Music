@@ -35,6 +35,7 @@ import 'core/services/diagnostic_logger.dart';
 import 'core/services/external_media_intent_service.dart';
 import 'core/services/fm_widget_sync.dart';
 import 'core/services/lock_screen_action_service.dart';
+import 'core/services/login_expiry_monitor.dart';
 import 'core/services/lyricon_provider_service.dart';
 import 'core/services/media_notification_service.dart';
 import 'core/services/music_haptics_service.dart';
@@ -456,6 +457,9 @@ class _AppViewState extends State<_AppView> {
       unawaited(MediaNotificationService.consumePendingOpenCardLyric().then((pending) {
         if (pending) _openFullPlayerOnLyrics();
       }));
+      // 当前账号登录态后台检查：首帧后开始计时，10 分钟后首次检查，
+      // 确定过期才复用账号过期弹窗（无网络/未知不弹）。
+      LoginExpiryMonitor.instance.attach();
     });
     // 预测性返回 + 封面连贯过渡：两个开关互斥，冷启动一起载入并纠正历史同开的值
     // （裁决见 resolveCoverBackExclusivity，封面连贯过渡优先）。
@@ -592,10 +596,18 @@ class _AppViewState extends State<_AppView> {
   }
 
   /// 切歌回调：当前歌曲封面 url 变化时异步提取主色并注入 ThemeProvider。
+  ///
+  /// **仅在「封面动态取色」开启时提取**（[ThemeProvider.useCoverSeedColor]）：
+  /// 该开关关闭时 `effectiveSeedColor` 优先级链根本不会消费封面色（回落到
+  /// 系统壁纸色/手动色），而 palette 量化整段跑在主 isolate 上——每首歌一次
+  /// 的中位数切分 + 像素直方图实测可把事件循环拖住几十~上百毫秒，与「新歌起播
+  /// 时阻塞 UI」的时间点精确重合。开关开启的用户行为与此前完全一致（异步、
+  /// 过过期校验照旧）。
   Future<void> _onPlayerChanged() async {
     final url = context.read<PlayerProvider>().currentSong?.artworkUri;
     if (url == null || url == _lastCoverUrl) return;
     _lastCoverUrl = url;
+    if (!context.read<ThemeProvider>().useCoverSeedColor) return;
     final color = await ArtworkColorExtractor.extract(url);
     // 过期校验：提取期间已切歌则丢弃结果（参考 AM 歌词动态取色模式）
     if (context.read<PlayerProvider>().currentSong?.artworkUri != url) return;
@@ -854,6 +866,7 @@ class _AppViewState extends State<_AppView> {
     VivoMixSync.instance.dispose();
     // v66：语音点歌回调一并摘除（旧 State 的闭包不得滞留）。
     VoiceSearchBridge.instance.dispose();
+    LoginExpiryMonitor.instance.detach();
     _shortcutConfig?.removeListener(_applyDesktopShortcuts);
     _playerProvider?.removeListener(_onPlayerChanged);
     _backgroundThemeProvider?.removeListener(_onBackgroundChanged);
@@ -1469,6 +1482,7 @@ class _MainLayoutState extends State<_MainLayout>
         page = LaunchPadPage(
           onTabSelected: _switchToTab,
           onTabEnabled: _enableAndSwitchToTab,
+          onTabUnpinned: _unpinTab,
           onTabOpened: _openTabAsPage,
         );
         break;
@@ -2156,6 +2170,10 @@ class _MainLayoutState extends State<_MainLayout>
     // 故需监听切换后重建（与 kDesktopModeEnabled 同模式）。
     kHideNavBarOnSecondaryPages.addListener(_onHideNavBarOnSecondaryChanged);
     unawaited(_loadHideNavBarOnSecondaryPages());
+    // 主界面滚动时底栏跟手收起：本 State 的 scrollCollapseEnabled 直接读它，
+    // 切换后需重建（与上一条同一模式）。
+    kNavBarScrollCollapseEnabled.addListener(_onNavBarScrollCollapseChanged);
+    unawaited(_loadNavBarScrollCollapseEnabled());
     // 封面流歌单源：启动时载入持久化值（封面流页自己订阅通知器）。
     unawaited(_loadCoverFlowSource());
     // 悬浮播放器停靠位：启动时载入持久化值；未设置过则按设备形态取默认。
@@ -2242,6 +2260,9 @@ class _MainLayoutState extends State<_MainLayout>
     kDesktopModeEnabled.removeListener(_onDesktopModeChanged);
     kHideNavBarOnSecondaryPages.removeListener(
       _onHideNavBarOnSecondaryChanged,
+    );
+    kNavBarScrollCollapseEnabled.removeListener(
+      _onNavBarScrollCollapseChanged,
     );
     shortcutTabRequest.removeListener(_handleShortcutTabRequest);
     externalMediaRequest.removeListener(_handleExternalMediaRequest);
@@ -2419,6 +2440,22 @@ class _MainLayoutState extends State<_MainLayout>
     setState(() {});
   }
 
+  /// 启动时从持久化载入「滚动时底栏跟手收起」，写入全局
+  /// [kNavBarScrollCollapseEnabled]（默认 false = 关闭）。
+  Future<void> _loadNavBarScrollCollapseEnabled() async {
+    final enabled =
+        await SettingsRepository().getNavBarScrollCollapseEnabled();
+    if (!mounted) return;
+    if (kNavBarScrollCollapseEnabled.value != enabled) {
+      kNavBarScrollCollapseEnabled.value = enabled;
+    }
+  }
+
+  void _onNavBarScrollCollapseChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
   /// 启动时从持久化载入封面流歌单源，写入全局 [kCoverFlowSource]。
   ///
   /// 无需监听运行时变更：CoverFlowPage 自己 addListener 订听通知器，
@@ -2544,6 +2581,17 @@ class _MainLayoutState extends State<_MainLayout>
       tabConfig.toggleTabVisibility(tabId);
     }
     _switchToTab(tabId);
+  }
+
+  /// LaunchPad 长按取消固定：把已固定的 tab toggle 回隐藏态。
+  /// 不切换 tab——取消固定后仍留在当前页面，该 tab 从底栏消失。
+  void _unpinTab(String tabId) {
+    if (isFullPlayerOnTop) return;
+    final tabConfig = context.read<TabConfigProvider>();
+    if (!tabConfig.hiddenTabs.contains(tabId)) {
+      // ignore: discarded_futures
+      tabConfig.toggleTabVisibility(tabId);
+    }
   }
 
   /// LaunchPad 点击隐藏 tab：以二级页面路由打开对应功能页（不切换主 tab）。
@@ -2854,6 +2902,14 @@ class _MainLayoutState extends State<_MainLayout>
   Widget build(BuildContext context) {
     final tabConfig = context.watch<TabConfigProvider>();
     final visibleTabs = tabConfig.visibleTabs;
+    // 车机侧边面板横跨全高，主界面若被压到 600dp 以下会从横屏 rail 退化成
+    // 带底部导航栏的 compact 布局；页面按整屏高度布局的底部就被底栏槽位遮住。
+    // 只在横屏 + 侧边面板（非底部布局）时让形态判定回到整屏宽度。
+    final carMode = context.watch<CarModeProvider>();
+    final keepLandscapeRail =
+        carMode.active &&
+        !carMode.useBottomLayout &&
+        MediaQuery.orientationOf(context) == Orientation.landscape;
 
     // 安全守卫：如果当前选中索引超出可见 tab 范围，重置到最后一个
     if (_selectedIndex >= visibleTabs.length) {
@@ -2990,6 +3046,13 @@ class _MainLayoutState extends State<_MainLayout>
                       (_secondaryPageOnTop &&
                           kHideNavBarOnSecondaryPages.value),
                   hideRailNavigation: immersive || _secondaryPageOnTop,
+                  // 主界面纵向滚动时底栏跟手收起（默认关）。开关切换后需重建，
+                  // 故与 kHideNavBarOnSecondaryPages 同一模式挂监听。
+                  scrollCollapseEnabled: kNavBarScrollCollapseEnabled.value,
+                  useFullWidthForBreakpoint: keepLandscapeRail,
+                  // 车机模式隐藏了 MiniPlayer，rail 布局必须自己让出底部
+                  // 系统 Taskbar（平板横屏）的 inset，否则列表底部被盖住。
+                  reserveBottomInRail: keepLandscapeRail,
                   body: _buildBody(context, visibleTabs, immersive),
                 ),
         ),

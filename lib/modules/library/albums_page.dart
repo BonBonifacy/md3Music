@@ -1,4 +1,5 @@
 import 'package:material_ui/material_ui.dart';
+import '../../widgets/app_empty_state.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/layout/adaptive_navigator.dart';
@@ -47,14 +48,7 @@ class _AlbumsPageState extends State<AlbumsPage> {
   @override
   Widget build(BuildContext context) {
     if (widget.albums.isEmpty) {
-      return Center(
-        child: Text(
-          '暂无专辑',
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-        ),
-      );
+      return const AppEmptyState.text(title: '暂无专辑');
     }
 
     return ContentEntrance(
@@ -65,32 +59,24 @@ class _AlbumsPageState extends State<AlbumsPage> {
         // watch 以便列数变化时重建网格
         final gridColumns = context.watch<GridColumnsProvider>().gridColumns;
 
-        int crossAxisCount;
-        if (isPad) {
-          // Pad 模式：用户捏合调整的列数偏好，再按面板局部宽度夹取上限
-          //（计划 4.7：双栏/分栏改变可用宽度，窄面板不塞过多列）。
-          final localMax = gridColumnsForWidth(
-            constraints.maxWidth,
-            targetExtent: 200,
-            min: GridColumnsProvider.minColumns,
-            max: GridColumnsProvider.maxColumns,
-          );
-          crossAxisCount =
-              gridColumns.clamp(GridColumnsProvider.minColumns, localMax);
-        } else {
-          // 手机端：保留原有屏幕宽度响应式逻辑
-          final screenType = getScreenType(constraints.maxWidth);
-          switch (screenType) {
-            case ScreenType.compact:
-              crossAxisCount = 2;
-              break;
-            case ScreenType.medium:
-              crossAxisCount = 3;
-              break;
-            case ScreenType.expanded:
-              crossAxisCount = 4;
-          }
-        }
+        // **按目标卡宽算出的列数**才是基准：200dp 是专辑卡舒适宽度，
+        // 1936px 窗口可得约 8 列。
+        //
+        // 原来两条分支都把列数锁死在很小的范围（Pad 走用户偏好、默认 4；
+        // 非 Pad 的 expanded 档写死 4），1936px 下每格约 470×650 —— 一张
+        // 专辑卡被拉到半屏高，封面里只有一个音符图标、大片空腔。
+        // 现在宽度算出的值作为**下限**，用户捏合只允许在此基础上继续细调。
+        final widthBased = gridColumnsForWidth(
+          constraints.maxWidth,
+          targetExtent: 200,
+          min: 2,
+          max: 12,
+        );
+        final crossAxisCount = isPad
+            // Pad：用户偏好只能 ≥ 宽度基准（否则宽屏会被偏好值拉回 4 列）
+            ? (gridColumns > widthBased ? gridColumns : widthBased)
+                .clamp(2, 12)
+            : widthBased;
 
         final gridView = GridView.builder(
           // 列数变化时让 AnimatedSwitcher 识别为新 child，触发淡入淡出过渡

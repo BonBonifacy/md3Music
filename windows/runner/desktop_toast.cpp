@@ -1,16 +1,21 @@
+#include "bundled_font.h"
 #include "desktop_toast.h"
 
 #include <algorithm>
 #include <dwmapi.h>
 
 namespace {
+
 constexpr wchar_t kToastClass[] = L"MD3MusicDesktopToast";
 HWND toast_window = nullptr;
 
 HFONT CreateToastFont() {
-  return CreateFontW(-17, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+  // 统一使用便携包内嵌的 MD3MusicSans（Medium 500，SIL OFL 1.1）：
+  // 与全局 UI / 歌词同族；FW_MEDIUM 与内置字重一致，不触发假粗体合成。
+  md3_bundled_font::EnsureLoaded();
+  return CreateFontW(-17, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                     CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+                     CLEARTYPE_QUALITY, DEFAULT_PITCH, md3_bundled_font::kFamily);
 }
 
 int MeasureToastHeight(const std::wstring& text, int width) {

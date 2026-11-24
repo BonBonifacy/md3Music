@@ -62,34 +62,14 @@ class _MusicExploreSectionsState extends State<MusicExploreSections> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
-        // 入口不放进任何数据 Selector，首次打开和请求失败时也始终可见。
-        const SearchSectionHeader(title: '探索音乐'),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
-          child: Wrap(
-            spacing: AppSpacing.sm,
-            children: [
-              _buildExploreEntry('热门歌单', Icons.queue_music,
-                  (_) => const PlaylistBrowsePage()),
-              _buildExploreEntry('排行榜', Icons.leaderboard,
-                  (_) => const ChartsPage()),
-            ],
-          ),
-        ),
+        // 「探索音乐」入口区已移除：它只是「热门歌单 / 排行榜」两个跳转按钮，
+        // 而这两个目标各自在下方的区块标题右侧就是「查看全部」，入口重复。
+        // 删掉后上方直接进入主题歌单，纵向省掉约 88dp。
         _buildThemeSection(),
         _buildPlaylistSection(),
         _buildRankSection(),
         const Gap(AppSpacing.sm),
       ],
-    );
-  }
-
-  Widget _buildExploreEntry(String label, IconData icon, WidgetBuilder page) {
-    void open() => AdaptiveNav.openDetail(context, page);
-    return TvCardFocus(
-      onSelect: open,
-      debugLabel: 'explore-entry-$label',
-      child: SearchSectionAction(icon: icon, label: label, onTap: open),
     );
   }
 
@@ -213,6 +193,8 @@ class _MusicExploreSectionsState extends State<MusicExploreSections> {
               onTap: (i) => AdaptiveNav.openDetail(context,
                 (_) => PlaylistPage(playlist: plist[i].toPlaylist()),
               ),
+              // 8 个（默认 6）：宽屏 4 列时 6 个会排成 1.5 行、第二行只填一半。
+              maxItems: 8,
               regionKey: 'tv/explore-hot-playlists',
             ),
           ],
@@ -243,6 +225,8 @@ class _MusicExploreSectionsState extends State<MusicExploreSections> {
                     rankName: ranks[i].name,
                 ),
               ),
+              // 同上：8 个恰好两行排满。
+              maxItems: 8,
               regionKey: 'tv/explore-ranks',
             ),
           ],

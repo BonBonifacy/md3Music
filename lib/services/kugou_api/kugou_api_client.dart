@@ -4042,6 +4042,40 @@ class KugouApiClient {
     return data is Map && data.isNotEmpty;
   }
 
+  /// 三态判定当前 token 是否「确定已过期」，供后台定时检查使用。
+  /// 返回 true=明确过期（error_code 20017/20018 或 status=2）；
+  /// false=有效；null=无网络或未知业务结果，一律不弹窗，避免误弹。
+  ///
+  /// 与普通 [checkTokenValid] 的区别：后者把请求失败也保守算作无效，
+  /// 无法满足「只有确定过期才提示一次」的要求。
+  Future<bool?> checkTokenExpired() async {
+    final json = await _getAllowNonOk(KugouEndpoints.userDetail, noCache: true);
+    return classifyTokenExpiry(json);
+  }
+
+  /// 纯逻辑：根据 /user/detail 响应判定是否「确定已过期」。
+  /// true=明确过期（20017/20018 或 status=2）；false=有效；
+  /// null=网络失败(json=null)或其它未知业务结果，不弹窗。
+  static bool? classifyTokenExpiry(Map<String, dynamic>? json) {
+    if (json == null) return null;
+
+    final errorCode = json['error_code'];
+    final code = errorCode is num
+        ? errorCode.toInt().toString()
+        : errorCode is String
+            ? errorCode
+            : null;
+    if (code == '20017' || code == '20018') return true;
+
+    final status = json['status'];
+    if ((status is num && status == 2) || status == '2') return true;
+
+    if (!isBizOk(json)) return null; // 其他业务错误：未知，不误弹
+    final data = json['data'];
+    if (data is Map && data.isNotEmpty) return false; // 有效
+    return null;
+  }
+
   /// 判断用户态接口响应的业务状态是否成功。
   /// 成功判定：error_code 为 0 或缺失，且 status 为 1 或缺失。
   static bool isBizOk(Map<String, dynamic> json) {

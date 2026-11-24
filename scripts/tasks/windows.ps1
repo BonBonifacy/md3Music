@@ -403,14 +403,21 @@ Write-Step "flutter build windows --release$(if ($With3D) { '（含 3D 封面）
 Assert-Command flutter '请先安装并加入 PATH'
 Push-Location $RepoRoot
 try {
+    # MD3_RENDER_ENGINE：构建期注入渲染引擎口径，供设置页「当前渲染引擎」与
+    # 诊断导出读取（Windows 无 Android 原生 render_engine 通道，不传会误报 skia）。
+    # 默认走 Impeller（Flutter 桌面默认），手工实验 Skia 时改为 skia。
     if ($With3D) {
         Invoke-Native {
             flutter build windows --release `
                 --dart-define=ENABLE_DEPTH_3D=true `
-                --dart-define=DEPTH_BACKEND=dart_ffi
+                --dart-define=DEPTH_BACKEND=dart_ffi `
+                --dart-define=MD3_RENDER_ENGINE=impeller
         }
     } else {
-        Invoke-Native { flutter build windows --release }
+        Invoke-Native {
+            flutter build windows --release `
+                --dart-define=MD3_RENDER_ENGINE=impeller
+        }
     }
 }
 catch {
@@ -518,6 +525,14 @@ try {
             Remove-ItemBypass $stale.FullName
         }
         Remove-ItemBypass (Join-Path $appDir 'depth_model')
+        # 旧字体残留：CMake 安装列表改过字体后，旧字体不会被 INSTALL 自动删除，
+        # 暂存整目录拷贝会把它们混进 zip。在暂存副本上剔除所有非当前安装名单的字体。
+        # 注意保留随字体分发的授权文本（OFL.txt）：SIL OFL 条件 2 要求授权文件与
+        # 字体一同分发，剔除逻辑不能把它当"旧残留"删掉。
+        $keepEntries = @('MD3MusicSans.ttf', 'OFL.txt')
+        foreach ($stale in @(Get-ChildItem -Path (Join-Path $appDir 'data/fonts/*') -File -ErrorAction SilentlyContinue)) {
+            if ($keepEntries -notcontains $stale.Name) { Remove-ItemBypass $stale.FullName }
+        }
     }
     $launcherPath = Join-Path $stageDir 'md3Music.exe'
     $launcherNamespace = 'Md3Portable' + [Guid]::NewGuid().ToString('N')

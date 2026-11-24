@@ -46,21 +46,35 @@ class PlayerCoverShadow {
   /// [shadowColor] 由宿主传 `colorScheme.shadow` 而非在这里 `Theme.of`：两个播放页
   /// 用的 [ColorScheme] 是 `material_ui` 的同名类，与 flutter/material 的是两个不同
   /// 类型（`Color` 才是两边共通的）。
+  /// [intensityScale] 是**临时**倍率（只缩放阴影，不动封面本体），用于封面
+  /// 绕纵轴翻转时淡出：投影轮廓画的是静止方盒，封面收窄/侧立时它仍是一整块
+  /// 方形投影 → 穿帮。翻转窗口把它补间到 0，收敛后回到 1。
   static Widget wrap({
     required Color shadowColor,
     required Widget child,
+    double intensityScale = 1.0,
   }) {
     return ValueListenableBuilder<double>(
       valueListenable: kCoverShadowIntensity,
       builder: (context, intensity, cached) {
+        // 全局强度本身为 0（设置里关掉投影）：整层省掉，省一次布局。这是**长期
+        // 稳态**，不会在翻转过程中变化，结构变化最多发生一次（调滑块）。
         if (intensity <= minIntensity) return cached!;
+        final effective = intensity * intensityScale;
+        // 但「翻转淡出把 intensityScale 补间到 0」**不能省层**：结构一旦从
+        // 「LayoutBuilder → DecoratedBox → 封面」塌缩成「封面」，封面子树整体
+        // 换位置 → Element 重建 → 正在拖动的 CoverFlipCrossfade State 被销毁
+        // （真机：第一次滑动拖到一半自己断掉，第二次才好；日志里同一轮出现
+        // 两个 AnimationController 实例）。没有阴影时只把 decoration 置空。
         return LayoutBuilder(
           builder: (context, constraints) => DecoratedBox(
-            decoration: decoration(
-              shadowColor: shadowColor,
-              side: _shortestSide(constraints),
-              intensity: intensity,
-            ),
+            decoration: effective <= minIntensity
+                ? const BoxDecoration()
+                : decoration(
+                    shadowColor: shadowColor,
+                    side: _shortestSide(constraints),
+                    intensity: effective,
+                  ),
             child: child,
           ),
         );

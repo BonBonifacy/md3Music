@@ -196,10 +196,31 @@ void main() {
         await tester.pump();
         expect(calls, isEmpty, reason: '已经全屏，Zen 不该再发一次 setFullscreen');
 
-        WindowsFullscreen.exitZen();
+        expect(
+          WindowsFullscreen.exitZen(),
+          isTrue,
+          reason: '退出波据此判「退出后仍是全屏直角」，不能读 active.value（IPC 迟到）',
+        );
         await tester.pump();
         expect(calls, isEmpty, reason: '全屏不是 Zen 开的，退出 Zen 不得关掉它');
         expect(WindowsFullscreen.active.value, isTrue);
+      });
+    });
+
+    testWidgets('无快照时 exitZen 返回 null；切过全屏时返回进入前状态', (tester) async {
+      await onWindows(() async {
+        // 右键进入这类不切全屏的路径没有 Zen 持有的快照。
+        expect(WindowsFullscreen.exitZen(), isNull);
+
+        WindowsFullscreen.enterZen();
+        await tester.pump();
+        expect(
+          WindowsFullscreen.exitZen(),
+          isFalse,
+          reason: '进入前非全屏：退出后恢复成普通窗口，退出波该取圆角',
+        );
+        await tester.pump();
+        expect(WindowsFullscreen.active.value, isFalse);
       });
     });
 

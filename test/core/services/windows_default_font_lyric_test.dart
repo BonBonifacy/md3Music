@@ -6,7 +6,7 @@ import 'package:md3music/widgets/apple_lyrics/layout/lyric_preferences.dart';
 import 'package:md3music/widgets/md3_lyric_preferences.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// 歌词字体链路：Windows 的「系统默认」档必须落到便携包内置思源黑体。
+/// 歌词字体链路：Windows 的「系统默认」档必须落到便携包内置字体 MD3MusicSans。
 ///
 /// 歌词走 TextPainter + Canvas 直绘，不继承 `ThemeData.fontFamily`，所以
 /// 「还原所有设置」把字体来源键删回 system 之后，若歌词侧没接内置字体就会
@@ -15,7 +15,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('Windows 歌词默认档/还原后/自定义失败均使用内置字体', () async {
-    final source = File('windows/runner/fonts/SOURCEHANSANSCN-MEDIUM.OTF');
+    final source = File('windows/runner/fonts/${WindowsDefaultFont.fileName}');
     expect(source.existsSync(), isTrue);
     await WindowsDefaultFont.load(fontFilePath: source.absolute.path);
     expect(WindowsDefaultFont.loadedFamily, WindowsDefaultFont.family);

@@ -4,6 +4,7 @@ import '../../core/layout/adaptive_navigator.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dpad/dpad.dart';
 import 'package:material_ui/material_ui.dart';
+import '../../widgets/app_empty_state.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:m3e_core/m3e_core.dart';
@@ -287,6 +288,10 @@ class _SearchPageState extends State<SearchPage>
                     ? Colors.transparent
                     : colorScheme.surface,
                 surfaceTintColor: Colors.transparent,
+                // 全项目唯一漏了 scrolledUnderElevation 的顶栏：其它自定义
+                // 渐变顶栏（album/playlist/artist 详情）都关了它，只有这里
+                // 滚动时会莫名起一道阴影，翻页对比时最刺眼。
+                scrolledUnderElevation: 0,
                 // M3 SearchBar:高 48、全圆角、surfaceContainerHighest 填充。
                 title: SearchBar(
                   controller: _searchController,
@@ -603,8 +608,10 @@ class _SearchPageState extends State<SearchPage>
         children: [
           Expanded(
             child: ListView.builder(
+              // SongListItem 自带 10dp 内衬，这里补 6 凑成页面 16dp；
+              // 原来给 16 会变成 26（双重缩进），比其它页深一截。
               padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.lg,
+                horizontal: 6,
                 vertical: AppSpacing.sm,
               ),
               itemCount: results.length,
@@ -698,8 +705,10 @@ class _SearchPageState extends State<SearchPage>
         children: [
           Expanded(
             child: ListView.builder(
+              // SongListItem 自带 10dp 内衬，这里补 6 凑成页面 16dp；
+              // 原来给 16 会变成 26（双重缩进），比其它页深一截。
               padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.lg,
+                horizontal: 6,
                 vertical: AppSpacing.sm,
               ),
               itemCount: results.length,
@@ -1150,7 +1159,8 @@ class _SearchPageState extends State<SearchPage>
       return _buildNoResult();
     }
     return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+      // 同上：SongListItem 自带 10，补 6 凑 16（原 12 会变成 22）
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: AppSpacing.sm),
       itemCount: results.length,
       itemBuilder: (context, index) {
         return SongListItem(
@@ -1166,71 +1176,26 @@ class _SearchPageState extends State<SearchPage>
   }
 
   Widget _buildErrorState(String error, VoidCallback onRetry) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(AppSpacing.xxl),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.error_outline,
-              size: 48,
-              color: colorScheme.outline,
-            ),
-            const Gap(AppSpacing.md),
-            Text(
-              '搜索失败',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: colorScheme.onSurface,
-              ),
-            ),
-            const Gap(AppSpacing.sm),
-            Text(
-              error,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const Gap(AppSpacing.lg),
-            FilledButton.tonal(onPressed: onRetry, child: const Text('重试')),
-          ],
-        ),
-      ),
+    return AppEmptyState(
+      icon: Icons.error_outline,
+      title: '搜索失败',
+      subtitle: error,
+      action: FilledButton.tonal(onPressed: onRetry, child: const Text('重试')),
     );
   }
 
   Widget _buildNoResult() {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.search_off,
-            size: 48,
-            color: colorScheme.outline,
-          ),
-          const Gap(AppSpacing.md),
-          Text(
-            '未找到相关结果',
-            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const Gap(AppSpacing.lg),
-          // 无结果时的下一步引导:清空输入并聚焦搜索框,回到空态重新输入。
-          FilledButton.tonal(
-            onPressed: () {
-              _suggestDebounce?.cancel();
-              _searchController.clear();
-              setState(() {});
-              _searchFocusNode.requestFocus();
-            },
-            child: const Text('换个关键词'),
-          ),
-        ],
+    return AppEmptyState(
+      icon: Icons.search_off,
+      title: '未找到相关结果',
+      action: FilledButton.tonal(
+        onPressed: () {
+          _suggestDebounce?.cancel();
+          _searchController.clear();
+          setState(() {});
+          _searchFocusNode.requestFocus();
+        },
+        child: const Text('换个关键词'),
       ),
     );
   }

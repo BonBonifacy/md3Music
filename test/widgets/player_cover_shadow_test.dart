@@ -172,4 +172,60 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets('intensityScale 补间到 0 不重建封面子树（层级恒定）', (tester) async {
+    // 回归（2026-11-15 真机「第一次滑动拖到一半自己断掉」）：阴影淡出若
+    // 「没阴影就少包一层」，封面子树会从 DecoratedBox 的子变成
+    // ValueListenableBuilder 的子 → Element 重建 → 正在拖动的
+    // CoverFlipCrossfade State 被销毁，手势随之丢失。
+    _ProbeState.inits = 0;
+    Widget host(double scale) => MaterialApp(
+      home: Center(
+        child: SizedBox.square(
+          dimension: 200,
+          child: PlayerCoverShadow.wrap(
+            shadowColor: const Color(0xFF000000),
+            intensityScale: scale,
+            child: const _Probe(),
+          ),
+        ),
+      ),
+    );
+
+    await tester.pumpWidget(host(1.0));
+    expect(_ProbeState.inits, 1);
+
+    await tester.pumpWidget(host(0.0));
+    await tester.pump();
+    expect(_ProbeState.inits, 1, reason: '阴影淡出到 0 不得重建封面');
+    expect(
+      find.ancestor(
+        of: find.byType(_Probe),
+        matching: find.byType(DecoratedBox),
+      ),
+      findsOneWidget,
+      reason: '层级必须恒定，只是 decoration 为空',
+    );
+  });
+}
+
+/// 只用于数 initState 次数：>1 就说明封面子树被重建过。
+class _Probe extends StatefulWidget {
+  const _Probe();
+
+  @override
+  State<_Probe> createState() => _ProbeState();
+}
+
+class _ProbeState extends State<_Probe> {
+  static int inits = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    inits++;
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.expand();
 }

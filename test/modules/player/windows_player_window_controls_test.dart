@@ -125,7 +125,8 @@ void main() {
         reason: '$path：封面必须接鼠标右键切换沉浸',
       );
       expect(
-        code.contains('_enterZenMode(windowFullscreen: false)'),
+        // needle 不带闭括号：调用点实际写作 windowFullscreen: false, wave: true。
+        code.contains('_enterZenMode(windowFullscreen: false,'),
         isTrue,
         reason: '$path：右键进入的沉浸不得持窗口全屏',
       );
@@ -136,9 +137,58 @@ void main() {
       );
       // 长按入口保持历史语义（连带全屏）：默认参数不得被改成 false。
       expect(
-        code.contains('void _enterZenMode({bool windowFullscreen = true})'),
+        // needle 不带闭括号：签名实际带第二个参数 wave。默认值仍为 true：
+        // 长按 / F11 每次进入都显式传 true，本断言防「默认被改成 false」这一侧。
+        code.contains('void _enterZenMode({bool windowFullscreen = true,'),
         isTrue,
         reason: '$path：长按 / F11 进 Zen 仍要连带窗口全屏',
+      );
+    }
+  });
+
+  /// 进出 Zen 的扭曲波按「波期间的屏幕 / 窗口 R 角」取边缘 SDF 半径
+  /// （windows_fullscreen.dart 的 waveCornerRadius、
+  /// DistortionWaveStyle.maxCornerRadiusOf）。
+  ///
+  /// - Windows：Zen 会切窗口全屏，与 MiniPlayer 展开成播放页那条波
+  ///   （full_player_route.dart 直接读 active.value，因为那类波不切窗口）不同，
+  ///   必须预判前后形态；
+  /// - 移动端（含 pad）：贴设备上报的 displayCornerRadii，未上报按方角 ——
+  ///   screenCenter 的 62 是手机屏量级，pad 沿用会四角脱节。
+  test('两套播放页的 Zen 波都按屏幕真实 R 角取边缘圆角', () {
+    for (final path in files) {
+      final code = codeOf(path);
+      // ── 移动端分支 ──
+      expect(
+        code.contains('MediaQuery.displayCornerRadiiOf(context)'),
+        isTrue,
+        reason: '$path：移动端必须按设备上报的屏幕 R 角取圆角',
+      );
+      expect(
+        code.contains('DistortionWaveStyle.maxCornerRadiusOf(radii)'),
+        isTrue,
+        reason: '$path：移动端圆角必须走 maxCornerRadiusOf（未上报=方角）',
+      );
+      expect(
+        code.contains('if (!isWindowsDesktop) return null'),
+        isFalse,
+        reason: '$path：移动端不得再回落到 screenCenter 固定预设',
+      );
+      // ── Windows 分支（快照预判）──
+      expect(
+        code.contains('_zenWindowFullscreen || WindowsFullscreen.active.value'),
+        isTrue,
+        reason: '$path：进入波必须并入「进入前已处于全屏」的情形（右键路径）',
+      );
+      expect(
+        code.contains('_zenExitSnapshot == true'),
+        isTrue,
+        reason: '$path：退出波必须用进入前快照判直角，不能等 active.value 翻',
+      );
+      expect(
+        code.contains('_zenExitSnapshot = WindowsFullscreen.exitZen()'),
+        isTrue,
+        reason: '$path：快照必须在退全屏的同帧由 exitZen 返回值取回',
       );
     }
   });

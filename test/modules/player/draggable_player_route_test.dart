@@ -4,7 +4,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:md3music/core/layout/bottom_chrome_dimens.dart';
 import 'package:md3music/core/theme/motion_constants.dart';
+import 'package:md3music/core/layout/bottom_chrome_sink.dart';
 import 'package:md3music/modules/player/full_player_route.dart';
+import 'package:md3music/modules/player/player_morph_scene.dart';
 import 'package:md3music/modules/player/player_panel_frame.dart';
 import 'package:md3music/modules/player/player_cover_morph.dart';
 import 'package:md3music/providers/theme_provider.dart';
@@ -105,6 +107,8 @@ void main() {
     // 锚点同样是全局：留残值会让「锚点未知时合成起点」那条用例失真。
     playerDragOriginTop = 0;
     playerDragOriginBottom = 0;
+    PlayerPanelSignal.anchorOwner = null;
+    PlayerPanelSignal.anchorViewportHeight = 0;
   });
 
   tearDown(() {
@@ -112,6 +116,8 @@ void main() {
     activePlayerRoute = null;
     playerDragOriginTop = 0;
     playerDragOriginBottom = 0;
+    PlayerPanelSignal.anchorOwner = null;
+    PlayerPanelSignal.anchorViewportHeight = 0;
   });
 
   testWidgets('系统返回收起：pop 瞬间不硬跳 0，全程单调回落到 0', (WidgetTester tester) async {
@@ -478,6 +484,116 @@ void main() {
       expect(anchor.height, BottomChromeDimens.discReservedBottom);
       expect(anchor.top + anchor.height, closeTo(869, 1e-9));
       expect(anchor.top, greaterThan(0), reason: '不能合成到屏幕顶端那一条');
+    });
+
+    test('转屏后进栈快照作废：收起落点改读当前视口下的锚点', () {
+      // 真机复现路径：横屏（393 高）点迷你条进播放页 —— 快照锚点 323；
+      // 转竖屏（873 高）后下拉收起。旧实现按 323 收起，面板停在屏高 1/3 处，
+      // 随后真迷你条才在屏底出现（收起位置错位）。
+      final scene = PlayerMorphScene(
+        panelRect: const Rect.fromLTWH(0, 323, 851, 70),
+        screenHeight: 393,
+        form: PlayerBarForm.residentBar,
+      );
+      final route = DraggablePlayerRoute<void>(
+        builder: (_) => const SizedBox.shrink(),
+        scene: scene,
+      );
+      // 快照仍在采集时的视口下有效。
+      expect(route.panelAnchorFor(393).top, 323);
+      // 视口变了：快照作废，锚点也没有登记 → 退化到贴底兜底条，
+      // 绝不能停在 323（那正是「收在半空」的位置）。
+      playerDragOriginTop = 0;
+      playerDragOriginBottom = 0;
+      final rotated = route.panelAnchorFor(873);
+      expect(
+        rotated.top,
+        greaterThan(700),
+        reason: '转屏后仍按旧快照收起，面板会停在屏中间',
+      );
+      expect(rotated.top + rotated.height, closeTo(873, 1e-6));
+    });
+
+    test('重登记的锚点属于新视口时优先于旧快照', () {
+      final scene = PlayerMorphScene(
+        panelRect: const Rect.fromLTWH(0, 323, 851, 70),
+        screenHeight: 393,
+        form: PlayerBarForm.residentBar,
+      );
+      final route = DraggablePlayerRoute<void>(
+        builder: (_) => const SizedBox.shrink(),
+        scene: scene,
+      );
+      // 迷你条在转屏后按新视口重测并重登记（见 MiniPlayer._syncAnchorToViewport）。
+      playerDragOriginTop = 780;
+      playerDragOriginBottom = 850;
+      publishPlayerDragOrigin(
+        top: 780,
+        bottom: 850,
+        viewportHeight: 873,
+      );
+      final anchor = route.panelAnchorFor(873);
+      expect(anchor.top, 780);
+      expect(anchor.height, 70);
+    });
+
+    test('拖拽模式的进栈屏高同样参与过期判定', () {
+      final route = DraggablePlayerRoute<void>(
+        builder: (_) => const SizedBox.shrink(),
+        dragOriginTop: 323,
+        dragOriginBottom: 393,
+        screenHeight: 393,
+      );
+      expect(route.panelAnchorFor(393).top, 323);
+      playerDragOriginTop = 0;
+      playerDragOriginBottom = 0;
+      expect(
+        route.panelAnchorFor(873).top,
+        greaterThan(700),
+        reason: '上拉展开后转屏：收起距离必须按新视口重算',
+      );
+    });
+
+    test('panelAnchorFor：锚点在旧视口登记时按未登记处理', () {
+      publishPlayerDragOrigin(
+        top: 323,
+        bottom: 393,
+        viewportHeight: 393,
+      );
+      final route = DraggablePlayerRoute<void>(
+        builder: (_) => const SizedBox.shrink(),
+      );
+      // 同一视口：照旧使用。
+      expect(route.panelAnchorFor(393).top, 323);
+      // 旧视口：退回贴底兜底，不把面板收到屏中间。
+      expect(route.panelAnchorFor(873).top, greaterThan(700));
+    });
+
+    test('panelGeometryFor：横向与纵向同一条过期判据（不劈裂）', () {
+      publishPlayerDragOrigin(
+        top: 323,
+        bottom: 393,
+        left: 16,
+        width: 480,
+        radius: 32,
+        viewportHeight: 393,
+      );
+      final route = DraggablePlayerRoute<void>(
+        builder: (_) => const SizedBox.shrink(),
+      );
+      final current = route.panelGeometryFor(const Size(851, 393));
+      expect(current.rect.top, 323);
+      expect(current.rect.left, 16);
+      expect(current.radius, 32);
+
+      final rotated = route.panelGeometryFor(const Size(400, 873));
+      expect(rotated.rect.top, greaterThan(700));
+      expect(
+        rotated.rect.left,
+        0,
+        reason: '锚点过期时横向也必须退回通栏，否则面板宽窄与纵向落点劈裂',
+      );
+      expect(rotated.radius, 0);
     });
 
     test('panelAnchorFor：合成起点与几何仍满足 top == dy 的不变量', () {

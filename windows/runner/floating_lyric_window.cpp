@@ -1,3 +1,4 @@
+#include "bundled_font.h"
 #include "floating_lyric_window.h"
 
 #include <windows.h>
@@ -10,9 +11,13 @@
 
 namespace {
 
+
+/// 本文件内的字体族名 / 加载入口（见 bundled_font.h）。
+inline constexpr auto& kFontFamily = md3_bundled_font::kFamily;
+inline void EnsureBundledFontLoaded() { md3_bundled_font::EnsureLoaded(); }
+
 constexpr wchar_t kWindowClass[] = L"MD3MUSIC_FLOATING_LYRIC";
 
-/// GDI 笔迹标记色（RGB，alpha 恒为 0）。
 ///
 /// 整帧先填成这个色，GDI 以 TRANSPARENT 背景绘制后，
 /// 「RGB 不再等于它」即精确代表「GDI 在此画过」。选一个现实中
@@ -292,10 +297,10 @@ void DrawGradientText(HDC dc, const std::wstring& text, RECT rect,
                       int font_height) {
   if (text.empty()) return;
   SetBkMode(dc, TRANSPARENT);
-  HFONT font = CreateFontW(font_height, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
+  HFONT font = CreateFontW(font_height, 0, 0, 0, FW_MEDIUM, FALSE, FALSE,
                            FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                           DEFAULT_PITCH, L"Microsoft YaHei UI");
+                           DEFAULT_PITCH, kFontFamily);
   HGDIOBJ old_font = SelectObject(dc, font);
 
   TEXTMETRICW metrics{};
@@ -348,10 +353,10 @@ void DrawWrappedText(HDC dc, const std::wstring& text, RECT rect,
                      std::uint32_t color, int font_height) {
   if (text.empty()) return;
   SetBkMode(dc, TRANSPARENT);
-  HFONT font = CreateFontW(font_height, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
+  HFONT font = CreateFontW(font_height, 0, 0, 0, FW_MEDIUM, FALSE, FALSE,
                            FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                           DEFAULT_PITCH, L"Microsoft YaHei UI");
+                           DEFAULT_PITCH, kFontFamily);
   HGDIOBJ old_font = SelectObject(dc, font);
   TEXTMETRICW metrics{};
   GetTextMetricsW(dc, &metrics);
@@ -451,10 +456,10 @@ void DrawTimedWords(HDC dc, const std::wstring& full_text,
   }
 
   SetBkMode(dc, TRANSPARENT);
-  HFONT font = CreateFontW(font_height, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE,
+  HFONT font = CreateFontW(font_height, 0, 0, 0, FW_MEDIUM, FALSE, FALSE,
                            FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-                           DEFAULT_PITCH, L"Microsoft YaHei UI");
+                           DEFAULT_PITCH, kFontFamily);
   HGDIOBJ old_font = SelectObject(dc, font);
   TEXTMETRICW metrics{};
   GetTextMetricsW(dc, &metrics);
@@ -539,6 +544,7 @@ void FloatingLyricWindow::SetConfigCallback(ConfigCallback callback,
 
 bool FloatingLyricWindow::Start(HWND owner, const std::wstring& lyric,
                                 const std::wstring& title) {
+  EnsureBundledFontLoaded();
   lyric_ = lyric;
   title_ = title;
   next_.clear();
@@ -718,11 +724,11 @@ void FloatingLyricWindow::Position(HWND owner) {
   int current_lines = 1;
   int next_lines = double_line_ ? 1 : 0;
   HDC measure_dc = GetDC(window_);
-  HFONT measure_font = CreateFontW(-font_px, 0, 0, 0, FW_SEMIBOLD, FALSE,
+  HFONT measure_font = CreateFontW(-font_px, 0, 0, 0, FW_MEDIUM, FALSE,
                                    FALSE, FALSE, DEFAULT_CHARSET,
                                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                    ANTIALIASED_QUALITY, DEFAULT_PITCH,
-                                   L"Microsoft YaHei UI");
+                                   kFontFamily);
   if (measure_dc && measure_font) {
     HGDIOBJ old_font = SelectObject(measure_dc, measure_font);
     const int text_width = width - 40;
@@ -743,11 +749,11 @@ void FloatingLyricWindow::Position(HWND owner) {
   if (next_lines < 1 && double_line_) next_lines = 1;
   TEXTMETRICW metrics{};
   HDC line_dc = GetDC(window_);
-  HFONT line_font = CreateFontW(-font_px, 0, 0, 0, FW_SEMIBOLD, FALSE,
+  HFONT line_font = CreateFontW(-font_px, 0, 0, 0, FW_MEDIUM, FALSE,
                                 FALSE, FALSE, DEFAULT_CHARSET,
                                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                 ANTIALIASED_QUALITY, DEFAULT_PITCH,
-                                L"Microsoft YaHei UI");
+                                kFontFamily);
   if (line_dc && line_font) {
     HGDIOBJ old_font = SelectObject(line_dc, line_font);
     GetTextMetricsW(line_dc, &metrics);
@@ -892,7 +898,7 @@ void FloatingLyricWindow::PaintButton(HDC dc, const RECT& rect,
   HFONT font = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
-                           L"Microsoft YaHei UI");
+                           kFontFamily);
   HGDIOBJ old_font = SelectObject(dc, font);
   RECT text_rect = rect;
   DrawTextW(dc, label.c_str(), -1, &text_rect,
@@ -962,10 +968,10 @@ void FloatingLyricWindow::PaintPanel(HDC dc, const RECT& rect) {
   {
     wchar_t font_label[32];
     _snwprintf_s(font_label, _TRUNCATE, L"%d", static_cast<int>(font_size_));
-    HFONT font = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+    HFONT font = CreateFontW(-14, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                             DEFAULT_PITCH, L"Microsoft YaHei UI");
+                             DEFAULT_PITCH, kFontFamily);
     HGDIOBJ of = SelectObject(dc, font);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, RGB(226, 226, 226));
@@ -1019,7 +1025,7 @@ void FloatingLyricWindow::PaintPanel(HDC dc, const RECT& rect) {
     HFONT font = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                              CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                             DEFAULT_PITCH, L"Microsoft YaHei UI");
+                             DEFAULT_PITCH, kFontFamily);
     HGDIOBJ of = SelectObject(dc, font);
     RECT label{r.left, r.bottom + 2, r.right, r.bottom + 20};
     wchar_t text[64];
@@ -1123,11 +1129,11 @@ void FloatingLyricWindow::Paint() {
 
   // 当前行：歌词优先，无歌词时退回歌名；超宽时按字换行而非裁切。
   const std::wstring& shown = lyric_.empty() ? title_ : lyric_;
-  HFONT layout_font = CreateFontW(font_height, 0, 0, 0, FW_SEMIBOLD, FALSE,
+  HFONT layout_font = CreateFontW(font_height, 0, 0, 0, FW_MEDIUM, FALSE,
                                   FALSE, FALSE, DEFAULT_CHARSET,
                                   OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                   ANTIALIASED_QUALITY, DEFAULT_PITCH,
-                                  L"Microsoft YaHei UI");
+                                  kFontFamily);
   HGDIOBJ old_layout_font = SelectObject(mem, layout_font);
   TEXTMETRICW metrics{};
   GetTextMetricsW(mem, &metrics);

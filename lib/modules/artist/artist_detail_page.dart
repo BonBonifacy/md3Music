@@ -1,5 +1,7 @@
 import 'package:dpad/dpad.dart';
 import 'package:material_ui/material_ui.dart';
+
+import '../../widgets/app_empty_state.dart';
 import 'package:provider/provider.dart';
 import 'package:m3e_core/m3e_core.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -1017,7 +1019,7 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
               ),
               decoration: BoxDecoration(
                 color: colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: AppRadius.smAll,
               ),
               child: Text(
                 '$count',
@@ -1067,30 +1069,13 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
   /// 专辑 / MV 空态：同 [_buildLoadingSliver] 撑一屏，理由一致
   /// （确实没内容的 Tab 也不该把页面高度压塌）。样式沿用歌曲空态：图标 + 一行文案。
   Widget _buildMediaEmptyState(String text, IconData icon) {
-    final colorScheme = Theme.of(context).colorScheme;
     return SliverToBoxAdapter(
       child: SizedBox(
         height: _mediaPlaceholderHeight,
         child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(AppSpacing.xxl),
-            child: Column(
-              children: [
-                Icon(
-                  icon,
-                  size: 48,
-                  color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                ),
-                const Gap(AppSpacing.md),
-                Text(
-                  text,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                ),
-              ],
-            ),
-          ),
+          // 统一用 AppEmptyState（图标 48 + titleMedium + 单层 onSurfaceVariant）；
+          // 原来是 bodyMedium 且图标叠 alpha 0.5，与其它页的空态不同档。
+          child: AppEmptyState(icon: icon, title: text),
         ),
       ),
     );
@@ -1305,7 +1290,10 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
             widget.artistName,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontWeight: FontWeight.bold),
+            // 裸 TextStyle(bold) 会吃 appBarTheme.titleTextStyle(22/w400) 再 bold，
+            // 渲染成 22/w700；其它页标题统一是 titleLarge 的 22/w600，
+            // 翻页时会突然变粗。这里显式取 titleLarge 保持全站一致。
+            style: Theme.of(context).textTheme.titleLarge,
           ),
         ),
       ),
@@ -1460,7 +1448,7 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
                                   ),
                                   decoration: BoxDecoration(
                                     color: colorScheme.surfaceContainerHighest,
-                                    borderRadius: BorderRadius.circular(10),
+                                    borderRadius: AppRadius.smAll,
                                   ),
                                   child: Text(
                                     '${_displaySongs.length}',
@@ -1544,46 +1532,16 @@ class _ArtistDetailPageState extends State<ArtistDetailPage> {
                         _displaySongs.isEmpty &&
                         _songs.isNotEmpty)
                       SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.all(AppSpacing.xxl),
-                          child: Column(
-                            children: [
-                              Icon(Icons.search_off, size: 48, color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5,
-                              ),
-                            ),
-                              const Gap(AppSpacing.sm),
-                              Text(
-                                '没有找到「$_searchQuery」相关的歌曲',
-                                style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant,
-                                  ),
-                              ),
-                            ],
-                          ),
+                        child: AppEmptyState(
+                          icon: Icons.search_off,
+                          title: '没有找到「$_searchQuery」相关的歌曲',
                         ),
                       )
                     else if (_tab == _ArtistTab.songs && _songs.isEmpty)
-                      SliverToBoxAdapter(
-                        child: Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(AppSpacing.xxl),
-                            child: Column(
-                              children: [
-                                Icon(
-                                  Icons.music_off,
-                                  size: 48,
-                                  color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5,
-                                ),
-                                ),
-                                const Gap(AppSpacing.md),
-                                Text(
-                                  '暂无歌曲',
-                                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                    color: colorScheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                      const SliverToBoxAdapter(
+                        child: AppEmptyState(
+                          icon: Icons.music_off,
+                          title: '暂无歌曲',
                         ),
                       )
                     else if (_tab == _ArtistTab.songs)

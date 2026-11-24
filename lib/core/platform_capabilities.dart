@@ -92,16 +92,10 @@ bool get supportsHaptics => isAndroidPlatform;
 /// `ShortcutConfigProvider` + `quick_actions_android` 支撑）。
 bool get supportsDesktopShortcut => isAndroidPlatform;
 
-/// 系统音效链（均衡器 / 音效库 / 音量均衡 / 响度归一）。
-///
-/// 根���在 `EqualizerService`：它靠 `AudioSession` + `androidAudioSessionIds`
-/// 绑定原生 `android.media.audiofx.Equalizer`。桌面端**没有任何等价实现**，
-/// `tryBind()` 在非 Android 直接 `return false`。
-///
-/// ⚠️ 危险之处：**它不会报错**。`setEnabled(true)` 照样返回成功、
-/// 持久化也照样写入，但 `tryBind()` 早已return false ⇒ 没有任何音效被挂载。
-/// 用户看到"已开启"却听不出变化，是典型的假成功。必须隐藏入口。
-bool get supportsSystemAudioEffects => isAndroidPlatform;
+/// 系统音效链。Android 走 android.media.audiofx.Equalizer 绑定 audio session；
+/// Windows 走 just_audio_windows fork 内的 AudioGraph 效果链（Task 2-4），
+/// 两端均为真实挂载，非假成功。
+bool get supportsSystemAudioEffects => isAndroidPlatform || isWindowsDesktop;
 
 /// 硬件解码播放（系统 audio offload 直通）。
 ///
@@ -109,11 +103,11 @@ bool get supportsSystemAudioEffects => isAndroidPlatform;
 /// 仅 Android：桌面端 / Web 没有 `AudioTrack` offload 通路，必须隐藏入口。
 bool get supportsAudioOffload => isAndroidPlatform;
 
-/// 蝰蛇母带处理链（10 段均衡 + 限幅，母带级处理）。
-///
-/// 字幕已自述"仅 Android"；依赖 Android 端 `LoudnessEnhancer` /
-/// `DynamicsProcessing` 等音频特效 API，关闭时输出逐字节透传。
-bool get supportsViperMaster => isAndroidPlatform;
+/// 蝰蛇母带。Android 是插在 DefaultAudioSink 的 AudioProcessorChain 上的
+/// 10 段 EQ + 限幅；Windows 因无包身份无法进程内激活自定义 APO（见
+/// docs/2026-11-16-windows-custom-apo-feasibility.md），走 4 段内置 EQ +
+/// Limiter 近似（10 段曲线经 Downsample10To4 映射），非逐字节等价。
+bool get supportsViperMaster => isAndroidPlatform || isWindowsDesktop;
 
 /// 音量均衡 / 参考响度（ReLU / 目标 dB 归一）。
 ///

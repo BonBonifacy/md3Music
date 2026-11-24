@@ -9,7 +9,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:md3music/modules/player/secondary_mini_player.dart';
 import 'package:md3music/modules/user/play_history_page.dart';
 import 'package:md3music/providers/kugou_provider.dart';
 import 'package:md3music/providers/listen_stats_provider.dart';
@@ -17,7 +16,6 @@ import 'package:md3music/providers/player_provider.dart';
 import 'package:md3music/providers/favorites_provider.dart';
 import 'package:md3music/providers/local_favorites_provider.dart';
 import 'package:md3music/services/kugou_api/kugou_api_client.dart';
-import 'package:md3music/widgets/song_list_item.dart';
 
 import '../../test_helpers/fake_secure_storage.dart';
 

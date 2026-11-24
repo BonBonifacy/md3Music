@@ -713,6 +713,7 @@ jobs:
         run: |
           flutter build windows --release `
             --dart-define=APP_VERSION=${{ needs.build-android.outputs.version }} `
+            --dart-define=MD3_RENDER_ENGINE=impeller `
             --build-name=${{ needs.build-android.outputs.version }} `
             --build-number=${{ needs.build-android.outputs.versionCode }}
 

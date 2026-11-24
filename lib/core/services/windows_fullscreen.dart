@@ -1,5 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show BuildContext, MediaQuery;
+
+import '../fx/waves/distortion_wave_style.dart';
 
 /// Windows 桌面「无边框窗口全屏」的 Dart 侧门面。
 ///
@@ -36,6 +39,34 @@ class WindowsFullscreen {
 
   /// Zen 进入前的全屏状态；null = 当前没有由 Zen 持有的全屏。
   static bool? _zenSnapshot;
+
+  /// 波的屏幕圆角（逻辑像素）：波的颜色带/边缘光按「圆角矩形 SDF」贴着屏幕边
+  /// 缘走，圆角半径必须与窗口实际的 DWM 圆角一致，否则四角光效与窗口边缘脱节
+  /// （screenCenter 预设的 62 是手机屏圆角量级；Win11 DWM 窗口圆角只有 8 物理像素，
+  /// 全屏/最大化形态是直角 —— 真机反馈「光效不匹配窗口四周圆角」）。
+  ///
+  /// [windowWillBeFullscreen]：波期间窗口是否处于全屏/最大化形态（直角）。
+  static double waveCornerRadius(bool windowWillBeFullscreen, double devicePixelRatio) {
+    if (!supported || windowWillBeFullscreen) return 0.0;
+    return 8.0 / devicePixelRatio;
+  }
+
+  /// 波的 style：Windows 上把边缘 SDF 圆角换成窗口实际的 DWM 圆角
+  /// （[waveCornerRadius]，见其注释）；其他平台原样返回 [base]。
+  /// [windowWillBeFullscreen] = 波期间窗口是否处于全屏/最大化形态（直角）。
+  static DistortionWaveStyle waveStyleForWindow(
+    BuildContext context,
+    DistortionWaveStyle base, {
+    bool windowWillBeFullscreen = false,
+  }) {
+    if (!supported) return base;
+    return base.copyWith(
+      cornerRadius: waveCornerRadius(
+        windowWillBeFullscreen,
+        MediaQuery.devicePixelRatioOf(context),
+      ),
+    );
+  }
 
   /// 直接设置窗口全屏（F11 / 标题栏用）。
   static Future<void> setActive(bool value) async {
@@ -94,18 +125,24 @@ class WindowsFullscreen {
     }
   }
 
-  /// 退出 Zen：只恢复「Zen 自己那次」全屏改变。
+  /// 退出 Zen：只恢复「Zen 自己那次」全屏改变，并返回**进入前**的全屏状态。
   ///
   /// 必须在调用方的 `_zenMode` 守卫**之前**调用（peek 期间 `_zenMode` 已是
   /// false，放守卫后面会漏掉恢复）。
-  static void exitZen() {
-    if (!supported) return;
+  ///
+  /// 返回值 = [enterZen] 记下的快照（null = 本次 Zen 没切过全屏）。播放页的
+  /// 退出波靠它判「窗口退全屏后恢复成圆角还是直角」：[active.value] 要等一轮
+  /// 通道 IPC 才翻，而波在下一帧就要按形态取圆角，读镜像必然迟到；快照是本地
+  /// 真值，任何时刻读都准。
+  static bool? exitZen() {
+    if (!supported) return null;
     final snapshot = _zenSnapshot;
     _zenSnapshot = null;
     if (snapshot == false && active.value) {
       // ignore: discarded_futures
       setActive(false);
     }
+    return snapshot;
   }
 }
 

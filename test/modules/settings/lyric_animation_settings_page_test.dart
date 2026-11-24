@@ -398,6 +398,142 @@ void main() {
     });
   });
 
+  group('长按标题单项重置', () {
+    /// 滚动到参数标题并长按。ListView 懒构建，需先滚进视口。
+    Future<void> longPressTitle(WidgetTester tester, String title) async {
+      await tester.scrollUntilVisible(
+        find.text(title),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(find.text(title));
+      await tester.pumpAndSettle();
+      await tester.longPress(find.text(title));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('滑块：长按标题只重置该项，其它参数不变且不弹全局确认',
+        (tester) async {
+      final prefs = LyricPreferences.instance;
+      await pumpPage(tester);
+      await setAllNonDefault();
+      await tester.pumpAndSettle();
+
+      await longPressTitle(tester, '歌词非当前行缩放');
+
+      expect(prefs.inactiveScale,
+          equals(LyricPreferences.defaultInactiveScaleForCurrentPlatform));
+      // 对照项仍是刚才设好的非默认值
+      expect(prefs.alignPosition,
+          equals(LyricPreferences.minAlignPositionForCurrentPlatform));
+      // 单项重置不弹 AppBar「恢复本页默认」的二次确认框
+      expect(find.text('恢复本页默认值'), findsNothing);
+    });
+
+    testWidgets('滑块：常驻 11 项逐一长按标题都能重置为默认', (tester) async {
+      final prefs = LyricPreferences.instance;
+      await pumpPage(tester);
+      await setAllNonDefault();
+      await tester.pumpAndSettle();
+
+      final cases = [
+        (
+          title: '歌词非当前行缩放',
+          read: () => prefs.inactiveScale,
+          defaultValue: LyricPreferences.defaultInactiveScaleForCurrentPlatform,
+        ),
+        (
+          title: '歌词当前行位置',
+          read: () => prefs.alignPosition,
+          defaultValue: LyricPreferences.defaultAlignPositionForCurrentPlatform,
+        ),
+        (
+          title: '已播字上浮高度',
+          read: () => prefs.liftHeightPx,
+          defaultValue: LyricPreferences.defaultLiftHeightPxForCurrentPlatform,
+        ),
+        (
+          title: '已播歌词透明度',
+          read: () => prefs.playedOpacity,
+          defaultValue: LyricPreferences.defaultPlayedOpacityForCurrentPlatform,
+        ),
+        (
+          title: '未播歌词透明度',
+          read: () => prefs.unplayedOpacity,
+          defaultValue: LyricPreferences.defaultUnplayedOpacityForCurrentPlatform,
+        ),
+        (
+          title: '间奏点水平位置',
+          read: () => prefs.interludeDotsStartX,
+          defaultValue:
+              LyricPreferences.defaultInterludeDotsStartXForCurrentPlatform,
+        ),
+        (
+          title: '间奏点圆点大小',
+          read: () => prefs.interludeDotRadius,
+          defaultValue:
+              LyricPreferences.defaultInterludeDotRadiusForCurrentPlatform,
+        ),
+        (
+          title: '间奏点间距',
+          read: () => prefs.interludeDotSpacing,
+          defaultValue:
+              LyricPreferences.defaultInterludeDotSpacingForCurrentPlatform,
+        ),
+        (
+          title: '错峰上限',
+          read: () => prefs.cascadeMaxDelayMs,
+          defaultValue:
+              LyricPreferences.defaultCascadeMaxDelayMsForCurrentPlatform,
+        ),
+        (
+          title: '错峰步长',
+          read: () => prefs.cascadeBaseStepMs,
+          defaultValue:
+              LyricPreferences.defaultCascadeBaseStepMsForCurrentPlatform,
+        ),
+        (
+          title: '错峰衰减',
+          read: () => prefs.cascadeDecayX,
+          defaultValue: LyricPreferences.defaultCascadeDecayXForCurrentPlatform,
+        ),
+      ];
+      for (final item in cases) {
+        await longPressTitle(tester, item.title);
+        expect(item.read(), equals(item.defaultValue),
+            reason: '长按「${item.title}」标题应把该项重置为默认');
+      }
+    });
+
+    testWidgets('开关：长按标题只把该开关恢复默认', (tester) async {
+      final prefs = LyricPreferences.instance;
+      await pumpPage(tester);
+      await setAllNonDefault();
+      await tester.pumpAndSettle();
+      expect(prefs.staggerFromCurrentLine, isFalse);
+
+      await longPressTitle(tester, '错峰从当前行上方开始');
+
+      expect(prefs.staggerFromCurrentLine,
+          equals(LyricPreferences.defaultStaggerFromCurrentLine));
+      // 对照项仍非默认
+      expect(prefs.fillMode, LyricFillMode.classic);
+    });
+
+    testWidgets('二选一：长按标题只把该项恢复默认', (tester) async {
+      final prefs = LyricPreferences.instance;
+      await pumpPage(tester);
+      await setAllNonDefault();
+      await tester.pumpAndSettle();
+
+      await longPressTitle(tester, '字内渐变样式');
+
+      expect(prefs.fillMode, LyricFillMode.sweep);
+      // 对照项仍非默认
+      expect(prefs.glowThresholdMode, GlowThresholdMode.adaptive);
+    });
+  });
+
   group('动画预设面板', () {
     Future<void> openSheet(WidgetTester tester) async {
       await tester.tap(find.byIcon(Icons.bookmarks_outlined));

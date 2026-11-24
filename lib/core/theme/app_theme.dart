@@ -1,9 +1,13 @@
+import 'dart:io';
+
 import 'package:m3e_core/m3e_core.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/painting.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../providers/theme_provider.dart';
+import '../services/windows_default_font.dart';
 
 bool _usesWallpaper(BuildContext context) =>
     context.watch<ThemeProvider?>()?.useBackgroundImage ??
@@ -674,6 +678,43 @@ class AppTheme {
     );
     // M3E 强调排版：统一提升字重并写入 wght/opsz 字轴。
     // rond 固定 0：不引入圆角字轴，避免改变字形。
-    return emphasized ? M3ETypography.emphasized(base, rond: 0) : base;
+    final TextTheme result =
+        emphasized ? M3ETypography.emphasized(base, rond: 0) : base;
+    return _clampTextThemeWeightToBundled(result, fontFamily);
+  }
+
+  /// Windows 使用内置字体（单档 Medium 500）时，把 TextTheme 里所有高于 500 的
+  /// 字重回落到 500：Skia 对单实例静态字体请求更粗字重时会做假粗体合成
+  /// （机械加粗、边缘发糊、小字号尤其明显）。真实字形渲染更清晰。非 Windows /
+  /// 内置字体未加载 / 自定义字体不受影响（[WindowsDefaultFont.bundledAwareFontWeight]
+  /// 已按平台与加载状态门控）。
+  static TextTheme _clampTextThemeWeightToBundled(
+      TextTheme theme, String? fontFamily) {
+    if (!Platform.isWindows ||
+        fontFamily != WindowsDefaultFont.loadedFamily) {
+      return theme;
+    }
+    // 本文件在 _buildTextTheme 中显式构造了全部 15 个档位，钳制时可安全取非空。
+    final clamp = (TextStyle s) => s.copyWith(
+          fontWeight: WindowsDefaultFont.bundledAwareFontWeight(
+              s.fontWeight ?? FontWeight.w400),
+        );
+    return theme.copyWith(
+      displayLarge: clamp(theme.displayLarge!),
+      displayMedium: clamp(theme.displayMedium!),
+      displaySmall: clamp(theme.displaySmall!),
+      headlineLarge: clamp(theme.headlineLarge!),
+      headlineMedium: clamp(theme.headlineMedium!),
+      headlineSmall: clamp(theme.headlineSmall!),
+      titleLarge: clamp(theme.titleLarge!),
+      titleMedium: clamp(theme.titleMedium!),
+      titleSmall: clamp(theme.titleSmall!),
+      bodyLarge: clamp(theme.bodyLarge!),
+      bodyMedium: clamp(theme.bodyMedium!),
+      bodySmall: clamp(theme.bodySmall!),
+      labelLarge: clamp(theme.labelLarge!),
+      labelMedium: clamp(theme.labelMedium!),
+      labelSmall: clamp(theme.labelSmall!),
+    );
   }
 }

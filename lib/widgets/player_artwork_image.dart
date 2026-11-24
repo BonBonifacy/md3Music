@@ -258,8 +258,8 @@ class _PlayerArtworkImageState extends State<PlayerArtworkImage> {
     _noteUriChanged();
     final cs = Theme.of(context).colorScheme;
     final uri = widget.artworkUri;
-    final bg = widget.backgroundColor ?? cs.surfaceContainerHighest;
-    final icon = widget.iconColor ?? cs.onSurfaceVariant;
+    final bg = widget.backgroundColor ?? cs.primaryContainer;
+    final icon = widget.iconColor ?? cs.primary;
     final iSize = widget.iconSize ?? 48;
 
     // 无 URI：尝试用 fallbackFilePath 读内嵌封面，否则显示占位符

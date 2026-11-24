@@ -293,10 +293,13 @@ class _CarModePanelState extends State<CarModePanel>
             atBottom ? mq.size.width : contentLength,
             atBottom ? contentLength : mq.size.height,
           ),
-          // 面板内容区不再吃系统底部安全区：dock 避让由面板整体上移承担
-          // （见 dockClearance），避免内容底部再垫一层空白。
-          padding: mq.padding.copyWith(bottom: 0),
-          viewPadding: mq.viewPadding.copyWith(bottom: 0),
+          // 底部布局：dock 避让由面板整体上移承担（见 dockClearance），
+          // 内容区不再吃系统底部安全区，避免多垫一条空白。
+          // 侧边布局：面板横跨全高，底部传输键必须继续吃系统安全区——
+          // 平板横屏 Taskbar 是系统悬浮栏，清掉 inset 会被它压住（真机复现）。
+          padding: atBottom ? mq.padding.copyWith(bottom: 0) : mq.padding,
+          viewPadding:
+              atBottom ? mq.viewPadding.copyWith(bottom: 0) : mq.viewPadding,
           // 窄容器下 1.3x 系统字号会把顶栏（音质徽章 + 睡眠药丸 + 更多）
           // 挤出溢出，面板内收紧文字缩放上限。
           textScaler: mq.textScaler.clamp(

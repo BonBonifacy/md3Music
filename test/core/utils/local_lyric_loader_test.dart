@@ -112,6 +112,51 @@ void main() {
     expect(lines.last.text, '怀着冷却了的心窝漂远方');
   });
 
+  test('L9. MP3 内嵌 USLT 歌词保留完整 LRC（audio_metadata_reader 1.8.1 吞首字符回归）', () {
+    // 真实文件（浮光 - 周深.mp3）的 USLT：UTF-8 + 语言码 XXX + 描述符 LYRICS，
+    // 正文首字符是 '['。第三方库取正文时会吞掉它，导致首行变成
+    // `00:26.400]...` 被 LyricParserChain 判成静态歌词。
+    const lyrics =
+        '[00:26.400]<00:26.400>看<00:26.770>指<00:27.210>尖\n'
+        '[00:38.380]<00:38.380>我<00:38.780>推<00:39.320>开';
+    final f = File('${tempDir.path}${Platform.pathSeparator}song.mp3');
+    f.writeAsBytesSync(_buildMp3WithUslt(lyrics));
+
+    final result = LocalLyricLoader.loadForAudio(f.path);
+
+    expect(result, isNotNull);
+    expect(result!.startsWith('['), isTrue, reason: '歌词正文首字符不能被吞');
+    final lines = LyricParserChain.parse(result);
+    expect(LyricParserChain.detectFormat(result), LyricFormat.lrc);
+    expect(lines, hasLength(2));
+    expect(lines.first.startTime, 26400);
+    expect(lines.first.text, '看指尖');
+    expect(lines.first.words, isNotEmpty, reason: '增强型 LRC 应解析出逐字时间戳');
+  });
+
+  test('L10. MP3 ID3v2.3 支持标签级去同步', () {
+    const lyrics = '[00:01.000]ÿà';
+    final payload = <int>[0, ...ascii.encode('und'), 0, ...latin1.encode(lyrics)];
+    final frame = <int>[
+      ...ascii.encode('USLT'),
+      0, 0, 0, payload.length,
+      0, 0,
+      ...payload,
+    ];
+    final storedFrame = <int>[
+      for (final byte in frame) ...[byte, if (byte == 0xff) 0],
+    ];
+    final audio = File('${tempDir.path}${Platform.pathSeparator}song.mp3');
+    audio.writeAsBytesSync([
+      ...ascii.encode('ID3'),
+      3, 0, 0x80,
+      ..._synchsafe(storedFrame.length),
+      ...storedFrame,
+    ]);
+
+    expect(LocalLyricLoader.loadForAudio(audio.path), lyrics);
+  });
+
   test('SAF content URI 优先使用 Song 缓存歌词', () async {
     final lyrics = await LocalLyricLoader.loadForSongAsync(
       localPath: 'content://media/audio/42',
@@ -163,6 +208,32 @@ void _appendFlacBlock(List<int> out, int type, bool isLast, List<int> data) {
 
 List<int> _u32le(int v) =>
     [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
+
+List<int> _buildMp3WithUslt(String lyrics) {
+  final payload = <int>[
+    3, // UTF-8
+    ...'XXX'.codeUnits, // 语言码
+    ...utf8.encode('LYRICS'),
+    0, // 内容描述符终止符
+    ...utf8.encode(lyrics),
+  ];
+
+  final frame = <int>[
+    ...'USLT'.codeUnits,
+    ..._synchsafe(payload.length),
+    0,
+    0,
+    ...payload,
+  ];
+  final header = <int>[
+    ...'ID3'.codeUnits,
+    4,
+    0,
+    0,
+    ..._synchsafe(frame.length),
+  ];
+  return [...header, ...frame];
+}
 
 List<int> _buildMp3WithSylt() {
   final payload = <int>[

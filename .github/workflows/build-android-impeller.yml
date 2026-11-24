@@ -88,7 +88,7 @@ jobs:
           restore-keys: |
             gradle-impeller-${{ runner.os }}-
 
-      # 从本分支源码重建，避免 APK 使用与下载/标签代码不匹配的旧 .so。
+      # 从同一份源码构建下载标签与频谱接口。
       - name: Build Rust library for Android arm64
         working-directory: kugou_api_server/rust
         run: |
@@ -161,8 +161,14 @@ jobs:
           unzip -p "$apk" lib/arm64-v8a/libkugou_server.so > "$RUNNER_TEMP/impeller-libkugou_server.so"
           "$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
             --dyn-syms --wide "$RUNNER_TEMP/impeller-libkugou_server.so" > "$RUNNER_TEMP/impeller-symbols.txt"
-          for symbol in md3_tag_writer_inspect md3_tag_writer_write md3_tag_writer_free_json; do
-            grep -Eq "[[:space:]]${symbol}$" "$RUNNER_TEMP/impeller-symbols.txt"
+          for symbol in \
+            md3_tag_writer_inspect md3_tag_writer_open md3_tag_writer_write md3_tag_writer_close md3_tag_writer_free_json \
+            spectrum_init spectrum_drop_state spectrum_reset spectrum_feed_pcm spectrum_poll_frame \
+            Java_com_md3music_md3music_SpectrumPlugin_nativeSpectrumFeedPCM; do
+            if ! grep -Eq "[[:space:]]${symbol}$" "$RUNNER_TEMP/impeller-symbols.txt"; then
+              echo "Missing native export $symbol" >&2
+              exit 1
+            fi
           done
           version="$(awk '/^version:/ { split($2, v, "+"); print v[1]; exit }' pubspec.yaml)"
           name="MD3Music-${version}-standard-arm64-v8a-impeller-${BUILD_TYPE}.apk"

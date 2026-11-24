@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:provider/provider.dart';
 
+import '../../core/fx/waves/distortion_wave.dart';
 import '../../core/services/windows_fullscreen.dart';
 import '../../core/theme/motion_constants.dart';
 import '../../providers/theme_provider.dart';
@@ -276,25 +279,48 @@ const double kPlayerFallbackMiniBarHeight = PlayerPanelSignal.fallbackBarHeight;
 /// [left]/[width]/[radius] 默认值即常驻条口径（通栏、方角），所以常驻条那几处
 /// 两参调用点无需改动；但每次都会**全量写入**，胶囊登记的窄矩形/32 圆角不会
 /// 泄漏给下一次常驻条拖拽。
+///
+/// [owner] 是发布者身份令牌（迷你条 State 私有 `Object()`），只用于「视口变化
+/// 后谁来重测」；[viewportHeight] 是**登记那一刻的视口高度**，消费端据此判定
+/// 锚点是否已经过期（转屏 / 分屏 / 小窗 resize 之后它是旧视口的绝对 Y）。
 void publishPlayerDragOrigin({
   required double top,
   required double bottom,
   double left = 0.0,
   double width = 0.0,
   double radius = 0.0,
+  Object? owner,
+  double viewportHeight = 0.0,
 }) => PlayerPanelSignal.publishAnchor(
   top: top,
   bottom: bottom,
   left: left,
   width: width,
   radius: radius,
+  owner: owner,
+  viewportHeight: viewportHeight,
 );
+
+/// 全局锚点（[playerDragOriginTop] 家族）在 [screenHeight] 这个视口下是否仍然有效。
+///
+/// 锚点量的是**绝对 Y**，视口一变就作废：转屏 / 分屏 / 小窗 resize 之后沿用旧值，
+/// 收起动画会把面板落到半空（真机复现：横屏点迷你条进播放页 → 转竖屏 → 下拉收起，
+/// 面板停在屏高 1/3 处，随后真迷你条又在屏底出现）。
+///
+/// 判据只看登记时记录的视口高度：未记录（`<= 0`，旧调用点 / 测试裸挂）一律按
+/// **有效**处理，与引入该字段之前逐值一致。
+bool playerPanelAnchorCurrent(double screenHeight) =>
+    PlayerPanelSignal.anchorIsCurrent(screenHeight);
 
 /// 已登记锚点对应的**屏幕矩形**（设计像素）。
 ///
 /// [screenSize] 用于把「未登记横向范围」补成通栏，并把矩形钳进屏内。
 /// 高度为 0 时回落到经验条高（[kPlayerFallbackMiniBarHeight]），保证消费端永远
 /// 拿得到一个有面积的矩形。
+///
+/// 锚点在**旧视口**登记的（转屏 / 分屏 / 小窗 resize，见 [playerPanelAnchorCurrent]）
+/// 按「未登记」处理：旧视口的绝对 Y 在新视口里没有意义，退回贴底兜底条比按旧值
+/// 算出一块悬在半空的矩形强。
 Rect playerPanelAnchorRect(Size screenSize) {
   final double w = screenSize.width.isFinite && screenSize.width > 0
       ? screenSize.width
@@ -302,17 +328,22 @@ Rect playerPanelAnchorRect(Size screenSize) {
   final double h = screenSize.height.isFinite && screenSize.height > 0
       ? screenSize.height
       : 0.0;
-  final double top = playerDragOriginTop > 0
-      ? playerDragOriginTop.clamp(0.0, h)
+  final bool registered = playerPanelAnchorCurrent(h);
+  final double anchorTop = registered ? playerDragOriginTop : 0.0;
+  final double anchorBottom = registered ? playerDragOriginBottom : 0.0;
+  final double anchorWidth = registered ? playerDragOriginWidth : 0.0;
+  final double anchorLeft = registered ? playerDragOriginLeft : 0.0;
+  final double top = anchorTop > 0
+      ? anchorTop.clamp(0.0, h)
       : math.max(0.0, h - kPlayerFallbackMiniBarHeight);
-  final double bottom = (playerDragOriginBottom - playerDragOriginTop) > 0
-      ? playerDragOriginBottom.clamp(top, h)
+  final double bottom = (anchorBottom - anchorTop) > 0
+      ? anchorBottom.clamp(top, h)
       : math.min(h, top + kPlayerFallbackMiniBarHeight);
-  final double width = playerDragOriginWidth > 0
-      ? playerDragOriginWidth.clamp(0.0, w)
+  final double width = anchorWidth > 0
+      ? anchorWidth.clamp(0.0, w)
       : w;
-  final double left = playerDragOriginWidth > 0
-      ? playerDragOriginLeft.clamp(0.0, math.max(0.0, w - width))
+  final double left = anchorWidth > 0
+      ? anchorLeft.clamp(0.0, math.max(0.0, w - width))
       : 0.0;
   return Rect.fromLTWH(left, top, width, bottom - top);
 }
@@ -404,6 +435,7 @@ void openFullPlayer(
   BuildContext context, {
   PlayerMorphScene? scene,
   bool bypassCarGuardOnce = false,
+  Rect? waveSource,
 }) {
   // MD3Music fork v43：恢复 v21 守卫（车机面板常驻播放器 + 全屏页 = 双实例
   // 双动画，v21 实测帧率翻倍+发热），深链经 bypassCarGuardOnce 旁路一次——
@@ -423,7 +455,7 @@ void openFullPlayer(
     }
     return;
   }
-  navigator.push(fullPlayerRoute(context, scene: scene));
+  navigator.push(fullPlayerRoute(context, scene: scene, waveSource: waveSource));
 }
 
 /// 创建并返回可拖拽的 FullPlayer 路由。
@@ -447,8 +479,17 @@ DraggablePlayerRoute<void> fullPlayerRoute(
   double? dragOriginTop,
   double? screenHeight,
   double? dragOriginBottom,
+  Rect? waveSource,
 }) {
   return DraggablePlayerRoute<void>(
+    // Windows 上把波边缘 SDF 圆角换成窗口实际 DWM 圆角（screenCenter 的 62
+    // 是手机屏量级，四角光效与窗口边缘脱节）；其他平台原样预设。
+    // 波期间窗口形态不变（进/出播放页不切窗口），按当前状态取圆角。
+    waveStyle: WindowsFullscreen.waveStyleForWindow(
+      context,
+      DistortionWaveStyle.screenCenter,
+      windowWillBeFullscreen: WindowsFullscreen.active.value,
+    ),
     lightweightDesktopEntry: context.read<ThemeProvider>().useAmStylePlayer,
     builder: (_) => Consumer<ThemeProvider>(
       builder: (context, theme, _) => theme.useAmStylePlayer
@@ -459,6 +500,7 @@ DraggablePlayerRoute<void> fullPlayerRoute(
     dragOriginTop: dragOriginTop,
     screenHeight: screenHeight,
     dragOriginBottom: dragOriginBottom,
+    waveSource: waveSource,
   );
 }
 
@@ -527,6 +569,8 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
     this.dragOriginTop,
     this.screenHeight,
     this.dragOriginBottom,
+    this.waveSource,
+    this.waveStyle,
   });
 
   final WidgetBuilder builder;
@@ -554,6 +598,34 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
   /// 拖拽开始时的屏幕高度（拖拽模式下非空）。
   final double? screenHeight;
 
+  /// 扭曲波过场的出发框（导航器坐标）。非空时**进入**这一段换成一道从它扩散的
+  /// 波，而不是面板展开（见 [_PlayerWaveEntry]）；收起仍走面板收起 —— 落点是
+  /// 迷你条，波从封面收回去并不对应任何还在屏上的控件。
+  ///
+  /// 只有「点封面进播放页」这类**有明确视觉起点**的入口才传它；迷你条上拉、
+  /// 悬浮胶囊、通知栏、桌面歌词这些入口保持原样（传 null）。
+  final Rect? waveSource;
+
+  /// 波的样式；null 用 [DistortionWaveStyle.screenCenter]。
+  final DistortionWaveStyle? waveStyle;
+
+  /// 这一次进栈用不用波：只有入口给了起点、且不是拖拽 / 顶栏下拉接管时才算。
+  bool get usesWaveEntry => waveSource != null && !isDragMode && topBarDragTotal == null;
+
+  Duration get _waveDuration {
+    final style = waveStyle ?? DistortionWaveStyle.screenCenter;
+    return Duration(microseconds: (style.duration * Duration.microsecondsPerSecond).round());
+  }
+
+  /// 上面那一页（波要带走的那一屏）。
+  Route<dynamic>? _previous;
+
+  @override
+  void didChangePrevious(Route<dynamic>? previousRoute) {
+    _previous = previousRoute;
+    super.didChangePrevious(previousRoute);
+  }
+
   /// 本次转场的底部锚点（顶端 + 高度，设计像素）。
   ///
   /// [screenHeight] 取**当下**的屏高（拖拽模式可用手势开始时的快照兜底），
@@ -579,13 +651,19 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
   /// 无关的高度。胶囊是移动端贴底的悬浮形态，其几何口径与常驻条一致
   /// （底端到屏底），故取它作为兜底。
   ({double top, double height}) panelAnchorFor(double screenHeight) {
-    final s = scene;
+    // 进栈快照只对**采集它的那个视口**成立（转屏 / 分屏 / 小窗 resize 之后
+    // 它们是旧视口的绝对 Y，见 [_snapshotCurrent]）。
+    final snapshotCurrent = _snapshotCurrent(screenHeight);
+    final s = snapshotCurrent ? scene : null;
     if (s != null && s.panelRect.height > 0) {
       return (top: s.panelTop, height: s.panelHeight);
     }
-    final top = dragOriginTop ?? playerDragOriginTop;
+    final anchorCurrent = playerPanelAnchorCurrent(screenHeight);
+    final top = (snapshotCurrent ? dragOriginTop : null) ??
+        (anchorCurrent ? playerDragOriginTop : 0.0);
     if (top > 0) {
-      final bottom = dragOriginBottom ?? playerDragOriginBottom;
+      final bottom = (snapshotCurrent ? dragOriginBottom : null) ??
+          (anchorCurrent ? playerDragOriginBottom : 0.0);
       final h = bottom - top;
       return (
         top: top,
@@ -596,6 +674,25 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
       top: math.max(0, screenHeight - BottomChromeDimens.discReservedBottom),
       height: BottomChromeDimens.discReservedBottom,
     );
+  }
+
+  /// 进栈时采集的快照（[scene] / [dragOriginTop]+[screenHeight]）是否仍属于
+  /// [viewportHeight] 这个视口。
+  ///
+  /// 两类快照都自带采集时的屏高（[PlayerMorphScene.screenHeight] 与 [screenHeight]
+  /// 字段），转屏 / 分屏 / 小窗 resize 之后一律作废 —— 它们是旧视口里的绝对 Y，
+  /// 直接拿去算收起落点会把面板落到屏中间。作废后改用全局锚点：迷你条在视口
+  /// 变化后会**重测并重新登记**（mini_player.dart / secondary_mini_player.dart
+  /// 的 _syncAnchorToViewport），所以重登值在当前视口下是准的。
+  ///
+  /// 视口未知（小于等于 0）或快照没记屏高时不做判定，保持引入本判据之前的行为。
+  bool _snapshotCurrent(double viewportHeight) {
+    if (!viewportHeight.isFinite || viewportHeight <= 0) return true;
+    bool same(double captured) =>
+        !captured.isFinite ||
+        captured <= 0 ||
+        (captured - viewportHeight).abs() < 0.5;
+    return same(screenHeight ?? 0) && same(scene?.screenHeight ?? 0);
   }
 
   /// 本次转场的**起点外轮廓**（矩形 + 圆角），设计像素。
@@ -626,7 +723,9 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
     final double top = anchor.top.clamp(0.0, h);
     final double bottom = (top + anchor.height).clamp(top, h);
 
-    final s = scene;
+    // 横向与纵向**同一条有效性判据**：快照 / 锚点若是在旧视口登记的，一律作废，
+    // 否则会出现「纵向已按重登锚点落到屏底、横向还是横屏那套窄矩形」的劈裂。
+    final s = _snapshotCurrent(h) ? scene : null;
     if (s != null && s.panelRect.height > 0) {
       final r = s.panelRect;
       // 快照的横向可能来自**旧视口**（转屏途中）：钳进当前屏。
@@ -637,15 +736,15 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
         radius: s.panelRadius,
       );
     }
-    final double width = playerDragOriginWidth > 0
-        ? playerDragOriginWidth.clamp(0.0, w)
-        : w;
-    final double left = playerDragOriginWidth > 0
+    final bool anchorCurrent = playerPanelAnchorCurrent(h);
+    final double anchorWidth = anchorCurrent ? playerDragOriginWidth : 0.0;
+    final double width = anchorWidth > 0 ? anchorWidth.clamp(0.0, w) : w;
+    final double left = anchorWidth > 0
         ? playerDragOriginLeft.clamp(0.0, math.max(0.0, w - width))
         : 0.0;
     return (
       rect: Rect.fromLTWH(left, top, width, bottom - top),
-      radius: playerDragOriginRadius,
+      radius: anchorCurrent ? playerDragOriginRadius : 0.0,
     );
   }
 
@@ -740,6 +839,18 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
   /// 控制器赋值到 [controller]，供外部手势读取。
   @override
   AnimationController createAnimationController() {
+    // 定档：入口给了起点、不是拖拽 / 顶栏下拉接管、着色器已就绪、系统没要求减少
+    // 动画 —— 四条同时成立才走波。之后 [buildTransitions] 只看这个字段。
+    _waveEntry = usesWaveEntry &&
+        (WavePrograms.ready != null || debugAssumeProgramsReady) &&
+        !_reduceMotion;
+    // 这条日志是「到底有没有走波」的唯一直接证据：没有任何波日志时，先看它。
+    // 一次进栈打一行，成本可忽略（诊断 grep 用 `[PlayerWave]`）。
+    debugPrint(
+      '[PlayerWave] decide: source=${waveSource == null ? 'none' : '${waveSource!.width.toInt()}x${waveSource!.height.toInt()}'} '
+      'drag=$isDragMode topBarDrag=${topBarDragTotal != null} '
+      'shaders=${WavePrograms.ready != null} reduced=$_reduceMotion -> wave=$_waveEntry',
+    );
     controller = AnimationController(
       vsync: navigator!,
       duration: transitionDuration,
@@ -845,6 +956,12 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
+    // 有明确视觉起点的入口（目前只有封面流点封面）：进入这一段交给扭曲波。
+    // 只在展开方向接管 —— 收起留给下面的面板收起，落点是迷你条。
+    // [createAnimationController] 已定档（含着色器是否就绪、是否减少动画）。
+    if (_waveEntry && _animDirection > 0) {
+      return _PlayerWaveEntry(route: this, animation: animation, child: child);
+    }
     // 系统「减弱动态效果」：动画播放期间不再过渡位移与淡入斜坡，直接落到本次动画的
     // 目标端点（playerExpansion 仍被写成端点值，迷你条不会停在半透明）。
     // 松手前的 1:1 跟手拖拽属于用户直接操纵，不在此列，保持原样。
@@ -904,10 +1021,10 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
         // **点击进入也走这里**（原先是「淡入 + 15% 抽屉上滑」）：用户要求非拖拽
         // 进出与拖拽观感一致。锚点未知时由 [panelGeometryFor] 合成一个胶囊本体
         // 起点，起点 opacity=0 所以估不准不可见。
-        final size = Size(
-          MediaQuery.sizeOf(context).width,
-          screenHeight ?? MediaQuery.sizeOf(context).height,
-        );
+        // 面板几何一律按**当前视口**算：screenHeight 是进栈那一刻的旧快照，
+        // 转屏 / 分屏 / 小窗 resize 之后拿它当坐标空间，会把窗口钳进一个已经
+        // 不存在的高度里（锚点的过期判定也是拿这个高度当基准的，两处必须同源）。
+        final size = MediaQuery.sizeOf(context);
         if (size.height > 0 && size.width > 0) {
           final geometry = panelGeometryFor(size);
           final pos = animating
@@ -1000,8 +1117,25 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
   @override
   bool get maintainState => true;
 
+  /// 系统「减弱动态效果」：此时不走波，交回下面原有的面板路径（它把位移与淡入
+  /// 压到端点）。路由时长在控制器创建时就要定，所以这里读一次导航器的 setting。
+  bool get _reduceMotion {
+    final ctx = navigator?.context;
+    return ctx != null && MediaQuery.disableAnimationsOf(ctx);
+  }
+
+  /// 这一次进栈到底走不走波。**只在 [createAnimationController] 里定一次** ——
+  /// 路由时长和「画不画波」必须同源，否则会出现时长是面板的 500ms、画的却是波，
+  /// 波前走到一半被路由收掉。
+  bool _waveEntry = false;
+
+  /// 测试用：主机上（`flutter test`）着色器加载不出来，这条分支平时跑不到。
+  @visibleForTesting
+  static bool debugAssumeProgramsReady = false;
+
   @override
   Duration get transitionDuration =>
+      _waveEntry ? _waveDuration :
       usesLightweightDesktopEntry ? const Duration(milliseconds: 180) :
       defaultTargetPlatform == TargetPlatform.windows && !isDragMode
           ? const Duration(milliseconds: 220)
@@ -1024,5 +1158,142 @@ class DraggablePlayerRoute<T> extends PageRoute<T> {
     _animStartValue = controller.value;
     _animDirection = -1;
     return super.didPop(result);
+  }
+}
+
+/// 封面流 → 播放页的进入：一道扭曲波从被点的封面扩散，把整屏换成播放页。
+///
+/// 只接管进入。进栈第一帧把 [playerExpansion] 推到 1：播放页在波后面直接以最终
+/// 形态出现，迷你条、系统栏与封面形变层一次到位；形变层只在 0<p<1 画，这里顺带
+/// 关掉它，波扫过时不会另有一只封面自己飞。
+///
+/// 旧页在过场开始时截成一张图（本路由 opaque = false，下面那一屏一直在画），
+/// 之后整段只有这张图 + 播放页本身，不逐帧截屏 —— 播放页里是视频/封面的活内容，
+/// 每帧截它既贵又不可靠。
+class _PlayerWaveEntry extends StatefulWidget {
+  const _PlayerWaveEntry({required this.route, required this.animation, required this.child});
+
+  final DraggablePlayerRoute<dynamic> route;
+  final Animation<double> animation;
+  final Widget child;
+
+  @override
+  State<_PlayerWaveEntry> createState() => _PlayerWaveEntryState();
+}
+
+class _PlayerWaveEntryState extends State<_PlayerWaveEntry> {
+  ui.Image? _outgoing;
+
+  /// 进栈到波走完的耗时，只给 `[PlayerWave]` 日志用。
+  final _watch = Stopwatch();
+
+  /// 截不到（下面那一页有光栅化不了的东西）：整段退成淡入淡出。
+  var _cannotCapture = false;
+
+  DistortionWaveStyle get _style => widget.route.waveStyle ?? DistortionWaveStyle.screenCenter;
+
+  /// 抓帧试过了没有。**这句话不能省**：没试过时画空盒子（露出下面真实的页面），
+  /// 试过之后不管有没有图都得继续画 —— 否则「演完把图释放掉」那一下会让 build
+  /// 误以为还没抓到图，把播放页整棵卸掉（表现就是进不去、卡死）。
+  bool _captureAttempted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    PlayerCoverMorphBus.instance.simplePageTransition = true;
+    widget.animation.addStatusListener(_onStatus);
+    _watch.start();
+    debugPrint('[PlayerWave] enter');
+    WidgetsBinding.instance.addPostFrameCallback((_) => _start());
+  }
+
+  @override
+  void dispose() {
+    widget.animation.removeStatusListener(_onStatus);
+    _outgoing?.dispose();
+    super.dispose();
+  }
+
+  /// 走完之后那一帧就没用了（p=1 只画播放页本身），早点还掉这十几兆。
+  ///
+  /// 「先置空、下一帧再释」：置空要让 `WaveStage` 先松开引用，紧接着 dispose
+  /// 有可能撞上还没重建的那一帧。
+  void _onStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    debugPrint('[PlayerWave] done ${_watch.elapsedMilliseconds}ms');
+    final image = _outgoing;
+    if (image == null) return;
+    setState(() => _outgoing = null);
+    WidgetsBinding.instance.addPostFrameCallback((_) => image.dispose());
+  }
+
+  /// 首帧后：先把旧页那一帧抓下来，再把播放页定格到最终形态。
+  ///
+  /// **顺序不能反**：`playerExpansion` 的监听者里有用它当重绘帧源的（底栏下沉、
+  /// 封面色带），写它会让下面那一页当帧 `markNeedsPaint`，而 `toImageSync` 带
+  /// `assert(!debugNeedsPaint)` —— 先写再抓，debug 包里会炸。
+  void _start() {
+    if (!mounted) return;
+    final reason = _capture();
+    if (!mounted) return;
+    // 抓不到就**当帧**退成淡入淡出，任何情况下都不留在空白状态。
+    if (reason != null) debugPrint('[PlayerWave] fallback — $reason');
+    setState(() {
+      _captureAttempted = true;
+      if (reason != null) _cannotCapture = true;
+    });
+    // 播放页直接以最终形态等在波后面（放在抓帧之后，理由见 [_capture]）。
+    if (playerExpansion.value != 1.0) playerExpansion.value = 1.0;
+  }
+
+  /// 抓旧页那一帧。成功返回 null，失败返回原因（同时打日志）。
+  ///
+  /// **必须在写 `playerExpansion` 之前调**：它的监听者里有用它当重绘帧源的
+  /// （底栏下沉、封面色带），写它会让下面那一页当帧 `markNeedsPaint`，而
+  /// `toImageSync` 带 `assert(!debugNeedsPaint)`。
+  String? _capture() {
+    try {
+      final previous = widget.route._previous;
+      if (previous is! PageRoute) return 'previous route is not a PageRoute';
+      final page = previous.subtreeContext?.findRenderObject();
+      if (page is! RenderRepaintBoundary) return 'no repaint boundary (${page.runtimeType})';
+      if (!page.hasSize) return 'boundary has no size';
+      final image = page.toImageSync(pixelRatio: MediaQuery.devicePixelRatioOf(context));
+      if (!mounted) {
+        image.dispose();
+        return 'unmounted while capturing';
+      }
+      debugPrint(
+        '[PlayerWave] captured ${image.width}x${image.height} '
+        'in ${_watch.elapsedMilliseconds}ms',
+      );
+      setState(() => _outgoing = image);
+      return null;
+    } catch (error, stack) {
+      // 这一层不往上抛：一次抓帧失败不该把整条过场连同播放页一起废掉。
+      debugPrintStack(stackTrace: stack, maxFrames: 6);
+      return 'toImageSync threw: $error';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 抓帧之前什么都不画，露出下面真实的页面（与整页波路由的首帧同一套处理）。
+    // 抓过之后一律画：没图就退成淡入淡出，演完释放了图也照画播放页本身。
+    if (!_captureAttempted) return const SizedBox.expand();
+    final style = _style;
+    return WaveStage(
+      progress: widget.animation,
+      style: style,
+      palette: style.paletteFor(Theme.of(context).colorScheme),
+      programs: WavePrograms.ready,
+      pixelRatio: MediaQuery.devicePixelRatioOf(context),
+      source: widget.route.waveSource,
+      plain: _cannotCapture,
+      contentImage: _outgoing,
+      revealed: widget.child,
+      revealedLiveOnceCrossed: true,
+      revealedLive: true,
+    );
   }
 }

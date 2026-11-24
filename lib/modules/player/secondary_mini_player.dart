@@ -11,6 +11,7 @@ import 'package:flutter/physics.dart';
 import '../../core/theme/motion_constants.dart';
 import '../../core/build_flags.dart';
 import '../../core/layout/bottom_chrome_dimens.dart';
+import '../../core/layout/bottom_chrome_sink.dart';
 import '../../core/layout/display_space.dart';
 import '../../core/layout/ime_collapse.dart';
 import '../../core/layout/page_title_alignment.dart';
@@ -578,6 +579,13 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
   /// `DisplayScaleScope` 内时为 null → 回退根空间，与常驻条一致。
   RenderObject? _scaleAnchor;
 
+  /// 本条在全局锚点登记簿里的**身份令牌**（只用于「视口变化后谁来重测」，
+  /// 见 [PlayerPanelSignal.anchorOwner]）。
+  final Object _anchorToken = Object();
+
+  /// 上一次登记锚点时的**视口高度**（见 [_syncAnchorToViewport]）。
+  double _anchorViewportHeight = 0.0;
+
   /// 本胶囊所属的页面路由（挂载期登记进 [BottomBarMorphRegistry]，卸载时移除）。
   Route<dynamic>? _capsuleRoute;
 
@@ -1096,6 +1104,7 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
     // 写进去只会污染端点快照。
     // 判据读**实时的** [inBottomBarFormFlight]（而非外层传入的快照）：卡体是稳定
     // 实例、不随 `standDown` 翻转重建，实时读值才能始终与当前窗口状态一致。
+    // 视口变化后的锚点重测在它的帧末回调里做（build 期量到的是上一帧几何）。
     if (!inBottomBarFormFlight()) _scheduleRegisterCapsuleRect();
     // 收缩态同步登记一次：新页面挂出的展开胶囊要把上一页残留的收缩值归零
     //（`_morph` 此后不动、listener 不触发，全靠这次与拖拽/旋转处的续写）。
@@ -1633,6 +1642,43 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
     );
   }
 
+  /// 登记胶囊锚点（当前视口口径），带发布者身份与视口高度。
+  void _publishAnchorRect() {
+    final MediaQueryData mq = MediaQuery.of(context);
+    _anchorViewportHeight = mq.size.height;
+    final Rect rect = _captureBodyRect();
+    publishPlayerDragOrigin(
+      top: rect.top,
+      bottom: rect.bottom,
+      left: rect.left,
+      width: rect.width,
+      radius: kCapsuleOutlineRadius,
+      owner: _anchorToken,
+      viewportHeight: mq.size.height,
+    );
+  }
+
+  /// 视口变了就按新视口**重测并重登记**锚点（与常驻条 [MiniPlayer] 同款）。
+  ///
+  /// 锚点量的是绝对 Y：横屏里登记的胶囊矩形（顶端约 300 / 屏高 393）转成竖屏
+  /// （屏高 873）后没有任何意义，播放页却会拿它当收起落点。
+  ///
+  /// 门控三条：只重测**自己登记的**那一份（[PlayerPanelSignal.anchorOwner]）；
+  /// 让位窗口 / 未挂载 / 量不到盒子时不动（保留旧值，等下一帧回调再试）。
+  void _syncAnchorToViewport() {
+    if (!mounted) return;
+    if (!identical(PlayerPanelSignal.anchorOwner, _anchorToken)) return;
+    final MediaQueryData mq = MediaQuery.of(context);
+    if ((mq.size.height - _anchorViewportHeight).abs() < 0.5) return;
+    if (inBottomBarFormFlight()) return;
+    final RenderBox? box =
+        _pillKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached || !box.hasSize || box.size.height <= 0) {
+      return;
+    }
+    _publishAnchorRect();
+  }
+
   /// 胶囊**可见本体**在锚点空间（设计像素）下的矩形。
   ///
   /// 量的是 `Material` 那一层（`_pillKey`）：宽 = 形变后的胶囊宽（手机 = 视口 −
@@ -1719,13 +1765,16 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
       if (_dragSource != null) return;
       if (deltaY < kTouchSlop || deltaY <= deltaX) return;
       _pullActivated = true;
-      // 起点矩形成组登记：矩形 + 外轮廓圆角。覆盖层与路由都读这一份。
+      // 起点矩形成组登记：矩形 + 外轮廓圆角 + 发布者身份 + 当前视口。
+      // 覆盖层与路由都读这一份（视口高度用于事后判定它是否已过期）。
       publishPlayerDragOrigin(
         top: _pullBodyRect.top,
         bottom: _pullBodyRect.bottom,
         left: _pullBodyRect.left,
         width: _pullBodyRect.width,
         radius: kCapsuleOutlineRadius,
+        owner: _anchorToken,
+        viewportHeight: MediaQuery.sizeOf(context).height,
       );
       playerDragActive.value = true;
     }
@@ -1855,6 +1904,9 @@ class _SecondaryMiniPlayerState extends State<SecondaryMiniPlayer>
   void _scheduleRegisterCapsuleRect() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // 本帧布局已按新视口跑完：此刻重测锚点才拿得到正确几何
+      // （胶囊上拉展开登记的那份是旧视口里的绝对 Y，播放页会拿它当收起落点）。
+      _syncAnchorToViewport();
       if (inBottomBarFormFlight()) return;
       // 只登记「本路由是栈顶」的结算态（与 residentRect 同口径）：IndexedStack
       // 保活的后台 tab 胶囊也在 build，它们的几何会污染端点快照；转场平移中

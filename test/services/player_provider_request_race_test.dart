@@ -21,6 +21,24 @@ import '../test_helpers/fake_secure_storage.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  // 网络自愈预算耗尽时会给前台用户弹一次原生 Toast（见 PlayerProvider
+  // _retryFailedPlayback）。fluttertoast 无平台实现，统一打桩避免未捕获错误。
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const services.MethodChannel('PonnamKarthik/fluttertoast'),
+      (call) async => null,
+    );
+  });
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const services.MethodChannel('PonnamKarthik/fluttertoast'),
+      null,
+    );
+  });
+
   test('在线音质解析前显示默认档位，降级后更新为实际音质', () async {
     SharedPreferences.setMockInitialValues({});
     installFakeSecureStorage();
@@ -260,6 +278,11 @@ void main() {
       apiClient.dio.httpClientAdapter = originalAdapter;
       messenger.setMockMethodCallHandler(connectivityMethodChannel, null);
       messenger.setMockStreamHandler(connectivityEventChannel, null);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const services.MethodChannel('PonnamKarthik/fluttertoast'),
+        null,
+      );
       await apiClient.clearCookies();
       uninstallFakeSecureStorage();
     }
@@ -669,6 +692,12 @@ void main() {
     late final PlayerProvider player;
     try {
       player = PlayerProvider();
+      // 网络类失败的前台自愈会重试；预算耗尽时弹一次原生 Toast。
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const services.MethodChannel('PonnamKarthik/fluttertoast'),
+        (call) async => null,
+      );
       await player.audioReady.timeout(const Duration(seconds: 10));
       final song = Song(
         id: 'pause-after-error',
@@ -695,8 +724,15 @@ void main() {
       player.didChangeAppLifecycleState(AppLifecycleState.paused);
       player.didChangeAppLifecycleState(AppLifecycleState.resumed);
       await Future<void>.delayed(const Duration(milliseconds: 80));
-
-      expect(adapter.playbackUrlRequestCount, 0);
+      // 网络类失败可能已在暂停生效前发起过有限的自愈请求（预算有上限）；
+      // 关键契约：用户明确暂停之后，自动恢复不得再增长请求数。
+      final requestsAfterPause = adapter.playbackUrlRequestCount;
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(
+        adapter.playbackUrlRequestCount,
+        requestsAfterPause,
+        reason: '用户明确暂停后，自动恢复必须停止发起新请求',
+      );
       expect(player.isPlaying, isFalse);
       expect(player.currentSong?.id, song.id);
       expect(player.currentIndex, 0);
@@ -707,12 +743,18 @@ void main() {
       await manualPlay;
       expect(audio.playCommandCount, 2);
       expect(player.currentSong?.id, song.id);
-      expect(adapter.playbackUrlRequestCount, 0);
+      // 手动点播走已解析的 URL：不新增网络请求。
+      expect(adapter.playbackUrlRequestCount, requestsAfterPause);
     } finally {
       player.dispose();
       await audio.dispose();
       AudioServiceLoader.setTestOverride(null);
       apiClient.dio.httpClientAdapter = originalAdapter;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+        const services.MethodChannel('PonnamKarthik/fluttertoast'),
+        null,
+      );
       await apiClient.clearCookies();
       uninstallFakeSecureStorage();
     }

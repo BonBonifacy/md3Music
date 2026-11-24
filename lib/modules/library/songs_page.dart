@@ -1,4 +1,5 @@
 import 'package:material_ui/material_ui.dart';
+import '../../widgets/app_empty_state.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -166,14 +167,7 @@ class _SongsPageState extends State<SongsPage> {
     final canLocate = currentIndex >= 0;
 
     if (songs.isEmpty) {
-      return Center(
-        child: Text(
-          '暂无歌曲',
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-        ),
-      );
+      return const AppEmptyState.text(title: '暂无歌曲');
     }
 
     return Column(

@@ -157,9 +157,37 @@ class EqualizerService extends ChangeNotifier {
   /// 为当前所有已就绪的 audio session 各绑定一个原生 Equalizer 实例。
   /// 返回 true 表示至少有一个会话已绑定。
   Future<bool> tryBind() async {
-    if (kIsWeb || !Platform.isAndroid) return false;
+    if (kIsWeb) return false;
     if (_systemEffectsDisabled || _suspended) return false;
     if (_isBinding) return _isBound;
+    if (!Platform.isAndroid && !Platform.isWindows) return false;
+
+    // Windows 没有 audio session ID：整条链只有一张图，绑定一次即可。
+    if (Platform.isWindows) {
+      if (_isBound) return true;
+      _isBinding = true;
+      try {
+        final info = await _channel.invokeMapMethod<String, dynamic>(
+          'init', {'audioSessionId': 0});
+        if (info != null) {
+          _bandCount = (info['bandCount'] as num?)?.toInt() ?? 4;
+          _minLevel = (info['minLevel'] as num?)?.toInt() ?? -1800;
+          _maxLevel = (info['maxLevel'] as num?)?.toInt() ?? 1800;
+          _centerFreqs = (info['centerFreqs'] as List?)
+                  ?.map((e) => (e as num).toInt()).toList() ?? [];
+          _bandLevels = (info['bandLevels'] as List?)
+                  ?.map((e) => (e as num).toInt()).toList() ??
+              List.filled(_bandCount, 0);
+          _isBound = true;
+        }
+      } catch (e) {
+        debugPrint('EqualizerService Windows bind error: $e');
+      } finally {
+        _isBinding = false;
+        notifyListeners();
+      }
+      return _isBound;
+    }
 
     final pending = AudioService()
         .androidAudioSessionIds

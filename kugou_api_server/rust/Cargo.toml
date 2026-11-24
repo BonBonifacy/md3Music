@@ -32,6 +32,8 @@ qrcode = { version = "0.14.0", features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # log 为日志门面：Android 由 android_logger 输出到 logcat；桌面未接 logger 时宏为 no-op
 log = "0.4"
+# 频谱分析：realfft（实数 FFT，自动 NEON/AVX2 SIMD；内含 num-complex）
+realfft = "3"
 
 [patch.crates-io]
 tiny_http = { path = "vendor/tiny_http" }

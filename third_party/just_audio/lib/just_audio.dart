@@ -2861,7 +2861,15 @@ class _ProxyHttpServer {
     _server.listen((request) async {
       if (request.method == 'GET') {
         final uriPath = _requestKey(request.uri);
-        final handler = _handlerMap[uriPath]!;
+        final handler = _handlerMap[uriPath];
+        if (handler == null) {
+          // 未注册路径（如扫描器请求 / 或切歌竞态下已注销的 /id/N）：
+          // 回 404 并关闭，避免空值断言抛未捕获异步错误、请求永不返回。
+          request.response.statusCode = HttpStatus.notFound;
+          request.response.contentLength = 0;
+          await request.response.close();
+          return;
+        }
         handler(this, request);
       }
     }, onDone: () {

@@ -11,6 +11,22 @@ import android.content.Intent
 /// 在 Android 10+ 后台启动 Activity 限制下仍可正常拉起。
 class LockScreenLyricReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
+        try {
+            handle(context, intent)
+        } catch (t: Throwable) {
+            // 系统受保护广播的分发入口：任何未捕获异常都会直接打死整个进程，
+            // 这里统一兜底并留全量状态，便于任何 ROM 差异取证。
+            android.util.Log.e(
+                "LockScreenLyric",
+                "onReceive crashed action=${intent?.action} " +
+                    "isNowPlaying=${AudioPlaybackService.isNowPlaying} " +
+                    "keyguardLocked=${LockScreenLyricActivity.isKeyguardLockedPublic(context)}",
+                t,
+            )
+        }
+    }
+
+    private fun handle(context: Context, intent: Intent?) {
         val action = intent?.action
         // 熄屏（准备锁屏）或亮屏（在锁屏上显示）都触发，双保险
         if (action != Intent.ACTION_SCREEN_OFF && action != Intent.ACTION_SCREEN_ON) return

@@ -45,6 +45,14 @@ class LyricScrollController {
   /// 用户是否正在拖动
   bool _isUserScrolling = false;
 
+  /// 歌词选择模式期间抑制自动跟随与自动回弹。
+  ///
+  /// 置 true 时 [setCurrentLine] 不再夺取滚动位置（等价用户滚动中），
+  /// [tick] 不再推进 5s 自动回弹倒计时——选择模式需要画面静止供逐行
+  /// 选择；退出选择模式后置回 false 恢复原语义（若选择期间滚过，
+  /// 剩余倒计时到期后照常回弹到当前行）。
+  bool suppressFollow = false;
+
   /// 自动回弹剩余倒计时（毫秒），<=0 且 _autoReturned=false 时表示等待回弹
   double _autoReturnRemainingMs = 0;
 
@@ -158,7 +166,7 @@ class LyricScrollController {
     _currentLineTop = lineTop >= 0 ? lineTop : index * lineHeight;
     _applySpringParams(isSeeking, intervalMs, isInterludeActive);
     // 用户滚动期间不强制 setTarget，等 5s 倒计时结束后自动回弹到最新行
-    if (!_isUserScrolling && _autoReturned) {
+    if (!_isUserScrolling && _autoReturned && !suppressFollow) {
       final double targetY = targetYForLine(index, lineHeight, lineTop: lineTop);
       if (snap && _viewportHeight > 0) {
         // 快速连切兜底：直接切行，不产生弹簧过渡
@@ -296,7 +304,10 @@ class LyricScrollController {
   /// 同时负责推进自动回弹倒计时（用户停止滚动后 5000ms）。
   bool tick(double dt) {
     // 推进自动回弹倒计时（仅在用户停止滚动且尚未回弹时）
-    if (!_isUserScrolling && !_autoReturned && _autoReturnRemainingMs > 0) {
+    if (!_isUserScrolling &&
+        !_autoReturned &&
+        _autoReturnRemainingMs > 0 &&
+        !suppressFollow) {
       _autoReturnRemainingMs -= dt * 1000;
       if (_autoReturnRemainingMs <= 0) {
         _autoReturnRemainingMs = 0;
@@ -319,6 +330,16 @@ class LyricScrollController {
       lineTop: _currentLineTop,
     );
     _posYSpring.setTarget(targetY);
+  }
+
+  /// 立即回弹到当前行（不等剩余的自动回弹倒计时）。
+  ///
+  /// 退出歌词选择模式时使用：选择期间画面静止（[suppressFollow] 冻结了
+  /// 跟随与回弹），关闭后应立即回到当前行而非等倒计时到期。弹簧平滑滚回
+  /// （setTarget，非瞬移）；[onAutoReturn] 照常触发（模糊恢复等挂此回调）。
+  void returnToCurrentLineNow() {
+    _returnToCurrentLine();
+    _autoReturnRemainingMs = 0;
   }
 
   /// 判断手势是否为点击
@@ -347,6 +368,7 @@ class LyricScrollController {
     _currentLineHeight = 0;
     _currentLineTop = 0;
     _autoReturned = true;
+    suppressFollow = false;
     _autoReturnRemainingMs = 0;
     _initialJumpDone = false;
   }

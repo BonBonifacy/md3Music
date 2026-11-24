@@ -329,7 +329,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         _isPlaying = false;
         _isResolvingUrl = false;
         _playbackNotReady = error is AudioSourceLoadDeadlineExceeded;
-        _resolveError = '播放失败，请重试';
+        // 网络类失败交自愈会话（自动重试 / 耗尽后 toast）；
+        // 本地文件缺失等确定性问题维持常驻错误条。
+        _failResolution(song, '播放失败，请重试');
         notifyListeners();
         try {
           _updateNotification();
@@ -416,6 +418,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   bool _isAppBackgrounded = false;
   // 后台失败恢复使用有限退避预算，耗尽后等待前台/用户/网络状态改变。
   Timer? _retryFailedTimer;
+  // —— 网络类失败的自愈会话 ——
+  // 「有网但 API 不通」或断网导致的解析失败不再向 UI 投放红色错误条：
+  // 会话内按短退避自动重试（或等网络恢复事件续播），预算耗尽只 toast 一次，
+  // 不留需要用户点击的重试控件。确定性失败（鉴权/付费章节）不进会话。
+  /// 处于自愈会话的歌曲 id；会话期间 UI 隐藏常驻错误条。
+  String? _networkRecoverySongId;
+  /// 本会话是否已 toast 过「网络失败」，防止重复提示刷屏。
+  bool _networkFailureToasted = false;
+  /// 自动恢复任务是否在途。用于区分「用户触发的失败」与「自动重试链内的
+  /// 失败」：只有前者重新起 kick，避免自动链自我放大成风暴。
+  bool _autoRecoveryActive = false;
   AudioQuality _audioQuality = AudioQuality.standard;
   // 音质降级提示开关（设置→播放→音质降级提示）。默认关闭。
   bool _showQualityDowngradeToast = false;
@@ -817,6 +830,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   final Duration _playbackDiagnosticSampleInterval;
   final bool _isAndroidPlatform;
 
+  /// 是否运行在 Windows（completed 误报防护的分流开关，见
+  /// [_inSpuriousCompletedGuardForEvent] / [_positionFallbackLoadGuardActive]）。
+  final bool _isWindowsPlatform;
+
   int _issuePlaybackRequest() {
     if (_isDisposed) return -1;
     _lastNonZeroPlatformPosition = Duration.zero;
@@ -1025,7 +1042,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   double get speed => _speed;
   bool get isResolvingUrl => _isResolvingUrl;
   String? get resolveError => _resolveError;
-  String? get resolveErrorForDisplay => safePlaybackErrorMessage(_resolveError);
+  String? get resolveErrorForDisplay {
+    // 网络类失败已进入自愈会话：不投放常驻错误条（自动重试 / 等待网络恢复），
+    // 预算耗尽也只 toast（见 [_failResolution]），不留需要点击的重试控件。
+    if (_networkRecoverySongId != null &&
+        _networkRecoverySongId == _currentSong?.id) {
+      return null;
+    }
+    return safePlaybackErrorMessage(_resolveError);
+  }
   bool get isManualRetryInFlight => _manualRetryRequest != null;
 
   /// 实际音质低于用户设置时提示一次。
@@ -1044,6 +1069,84 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
   String _resolveErrorText(Song? song) {
     if (song?.isLongAudio ?? false) return '该章节为 听书VIP单独付费内容';
     return '无法获取播放链接';
+  }
+
+  /// 清空解析失败态（含网络自愈会话）——新一轮播放/切歌开始时调用。
+  void _clearResolveError() {
+    _resolveError = null;
+    _networkRecoverySongId = null;
+    _networkFailureToasted = false;
+  }
+
+  /// 作废进行中的网络自愈会话（确定性失败接管 / 用户换上下文）。
+  void _clearNetworkRecoverySession() {
+    _networkRecoverySongId = null;
+    _networkFailureToasted = false;
+  }
+
+  /// 登记当前歌曲的解析/装载失败。
+  ///
+  /// 网络/API 类失败（在在线/云盘歌曲上的瞬时解析失败、或完全断网）不再投放
+  /// 红色错误条，改由 [_engageNetworkRecovery] 的自愈会话接管：前台按短退避
+  /// 自动重试、断网等「恢复」事件自动续播，预算耗尽也只 toast 一次——绝不
+  /// 留一个需要用户点击的重试控件。返回 true 表示已进入（或仍在）自愈会话，
+  /// 调用方据此跳过「歌曲无法播放」弹窗与自动跳下一首。确定性失败（鉴权 /
+  /// 付费章节）照旧投放常驻错误条，作废残留会话后返回 false。
+  ///
+  /// [stayOnFailure] 为 false 时表示调用方（next/previous 走路链）即将切到
+  /// 下一首：不登记会话，避免给即将被放弃的歌曲起自愈。
+  bool _failResolution(
+    Song? song,
+    String message, {
+    bool stayOnFailure = true,
+  }) {
+    _resolveError = message;
+    if (kIsWeb || song == null || !(song.isOnline || song.isCloud)) {
+      return false;
+    }
+    final kind = classifyPlaybackRecoveryFailure(
+      hasFailure: true,
+      userCanceled:
+          _lastRequestCancellationSource ==
+          _PlaybackRequestCancellationSource.userPause,
+      authenticationRequired: !KugouApiClient().isLoggedIn,
+      paidContent: song.isLongAudio,
+      networkAvailable: _lastHasNetwork,
+    );
+    final isNetworkKind = kind == PlaybackRecoveryFailureKind.transientResolution ||
+        kind == PlaybackRecoveryFailureKind.networkUnavailable;
+    if (!isNetworkKind) {
+      _clearNetworkRecoverySession();
+      return false;
+    }
+    if (!stayOnFailure) return false;
+    _engageNetworkRecovery(song);
+    return true;
+  }
+
+  /// 登记并驱动一次网络自愈会话。
+  ///
+  /// 完全断网：立即重试没有意义，等「断网→恢复」事件自动续播，只 toast 一次；
+  /// 有网但 API 不通：重置预算并按短退避链自动重试；自动重试已在途时不再叠
+  /// kick，避免请求风暴（与诊断日志中的密集重试同源问题）。
+  void _engageNetworkRecovery(Song song) {
+    _networkRecoverySongId = song.id;
+    if (!_lastHasNetwork) {
+      if (!_networkFailureToasted && !_isDisposed) {
+        _networkFailureToasted = true;
+        showToast(
+          safePlaybackErrorMessage('播放失败，请检查网络') ?? '播放失败，请检查网络',
+          long: true,
+        );
+      }
+      return;
+    }
+    if (_autoRecoveryActive) return;
+    _networkFailureToasted = false;
+    _failedRecoveryBudget.reset(song.id);
+    _retryFailedTimer?.cancel();
+    _retryFailedTimer = null;
+    unawaited(_retryFailedPlayback());
   }
 
   AudioQuality get audioQuality => _audioQuality;
@@ -1339,7 +1442,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       seekTo: position > Duration.zero ? position : null,
       playbackRequest: playbackRequest,
     );
-    if (!result.succeeded) _resolveError = _resolveErrorText(_currentSong);
+    if (!result.succeeded) {
+      // 退房恢复失败与常规起播同口径：网络类转自愈会话。
+      _failResolution(_currentSong, _resolveErrorText(_currentSong));
+    }
     notifyListeners();
   }
 
@@ -1368,12 +1474,30 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     PlaybackRecoveryBudget? failedRecoveryBudget,
     PlayerStateRepository? stateRepository,
     @visibleForTesting bool? isAndroidForTest,
+    @visibleForTesting bool? isWindowsForTest,
   }) : _audioSourceLoadTimeout = audioSourceLoadTimeout,
        _playbackDiagnosticSampleInterval =
            playbackDiagnosticSampleInterval ?? const Duration(seconds: 10),
        _stateRepo = stateRepository ?? PlayerStateRepository(),
-       _failedRecoveryBudget = failedRecoveryBudget ?? PlaybackRecoveryBudget(),
-       _isAndroidPlatform = isAndroidForTest ?? Platform.isAndroid {
+       // 未注入（生产）时使用「后台长退避 + 前台秒级快速退避」双档预算；
+       // 测试注入自定义预算时前台档回退为其 backoff，行为不变。
+       _failedRecoveryBudget = failedRecoveryBudget ??
+           PlaybackRecoveryBudget(
+             maxAttempts: 4,
+             backoff: const [
+               Duration(seconds: 30),
+               Duration(seconds: 60),
+               Duration(seconds: 120),
+             ],
+             foregroundBackoff: const [
+               Duration(seconds: 1),
+               Duration(seconds: 2),
+               Duration(seconds: 4),
+               Duration(seconds: 8),
+             ],
+           ),
+       _isAndroidPlatform = isAndroidForTest ?? Platform.isAndroid,
+       _isWindowsPlatform = isWindowsForTest ?? Platform.isWindows {
     WidgetsBinding.instance.addObserver(this);
     _initAudioService();
     // 监听自身变化检测切歌 → 推送 Lyricon（仅 enabled 时实际推送）
@@ -1766,15 +1890,34 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (song == null ||
         !song.isOnline ||
         failureKind != PlaybackRecoveryFailureKind.transientResolution) {
+      // 鉴权/付费等确定性失败若中途接管，必须作废自愈会话，让错误条重新可见
+      //（断网不在此列：会话继续等待网络恢复事件，UI 保持静默）。
+      if (failureKind == PlaybackRecoveryFailureKind.authenticationRequired ||
+          failureKind == PlaybackRecoveryFailureKind.paidContent) {
+        _clearNetworkRecoverySession();
+      }
       _stopRetryFailedTimer();
       return;
     }
     if (!_failedRecoveryBudget.tryConsume(song.id)) {
+      // 前台自愈预算耗尽：不再自动重试，也不再投放常驻错误条——只 toast
+      // 一次；用户再次点播或网络恢复事件会开启新的恢复窗口。
+      if (!_isAppBackgrounded &&
+          _networkRecoverySongId == song.id &&
+          !_networkFailureToasted) {
+        _networkFailureToasted = true;
+        showToast(
+          safePlaybackErrorMessage('播放失败，请检查网络') ?? '播放失败，请检查网络',
+          long: true,
+        );
+      }
       _stopRetryFailedTimer();
       return;
     }
     final token = _retryFailedFlight.tryStart();
     if (token == null) return;
+    // 标记自动重试在途：期间到来的用户触发失败不再叠 kick（见 _failResolution）。
+    _autoRecoveryActive = true;
     try {
       // 失败重试时使旧在线URL失效，强制走完整解析链路重新拿地址。
       // 否则当前Song仍带有旧URL，解析器会直接重播同一个已失效资源。
@@ -1798,10 +1941,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (result.succeeded) {
         _failedPlaybackPosition = null;
         _failedRecoveryBudget.reset(song.id);
-        _resolveError = null;
+        _clearResolveError();
         _stopRetryFailedTimer();
         notifyListeners();
-      } else if (_isAppBackgrounded) {
+      } else {
+        // 前台/后台失败都排下一次退避重试（前台秒级、后台分钟级）。
         _scheduleNextFailedRetry(song.id);
       }
     } catch (error) {
@@ -1814,12 +1958,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           song: song,
           outcome: 'exception',
           error: error,
-          retryable: _isAppBackgrounded,
+          retryable: true,
         );
-        _resolveError ??= '播放恢复失败，请稍后重试';
-        if (_isAppBackgrounded) _scheduleNextFailedRetry(song.id);
+        // 前台自动链内的异常也接管为静默自愈（不再弹「请稍后重试」常驻条）。
+        _failResolution(_currentSong, '播放恢复失败，请稍后重试');
+        _scheduleNextFailedRetry(song.id);
       }
     } finally {
+      _autoRecoveryActive = false;
       _retryFailedFlight.releaseIfOwned(token);
     }
   }
@@ -1831,14 +1977,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _scheduleNextFailedRetry(_currentSong?.id);
   }
 
+  /// 排下一次失败重试：前台按秒级快速退避（网络抖动尽快自愈且全程静默），
+  /// 后台保持分钟级长退避。预算耗尽返回 null，链自然停止。
   void _scheduleNextFailedRetry(String? songId) {
-    if (!_isAppBackgrounded ||
-        _resolveError == null ||
+    if (_resolveError == null ||
         songId == null ||
         _retryFailedTimer != null) {
       return;
     }
-    final delay = _failedRecoveryBudget.nextDelay;
+    final delay = _failedRecoveryBudget.nextDelay(background: _isAppBackgrounded);
     if (delay == null) return;
     final sequence = _retryFailedFlight.sequence;
     _retryFailedTimer = Timer(delay, () {
@@ -2325,10 +2472,11 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
         // 位置兜底：播放中 position >= duration 且 processingState 非 completed
         // 时主动触发切歌，防止 completed 事件丢失导致永不切歌（Media3 偶发）。
-        // 同样受 Windows 误报防护窗口约束：setUrl 加载新源后 3s 内不兜底切歌。
-        final insideLoadGuard =
-            DateTime.now().difference(_lastUrlLoadStarted) <
-            _urlLoadGuardWindow;
+        // 换源装载后的防护窗按平台分流（Windows 长窗 / Android 短窗，成因见
+        // [_inSpuriousCompletedGuardForEvent] 处注释）：Android 的 completed
+        // **事件**本身不受时间窗拦截，故本窗口只决定兜底路径要不要让位，不会
+        // 再出现两条检测路径同时失效的死区。
+        final bool insideLoadGuard = _positionFallbackLoadGuardActive();
         final duration = _duration ?? Duration.zero;
         if (_isPlaying &&
             !insideLoadGuard &&
@@ -2545,7 +2693,14 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           _completionReadyRequest = null;
           _isResolvingUrl = false;
           _isPlaying = false;
-          _resolveError = '播放失败，请重试';
+          // 带 HTTP 状态的上游失败（签名过期/限流/5xx）属于「网络连接在、API/CDN
+          // 不通」：交自愈会话（前台短退避自动重解析，预算耗尽只 toast 一次）。
+          // 无状态的解码器/容器错误重解析同样无效，维持常驻错误条供用户感知。
+          if (autoRetryPlatformError && e.httpStatusCode != null) {
+            _failResolution(song, '播放失败，请重试');
+          } else {
+            _resolveError = '播放失败，请重试';
+          }
           try {
             _updateNotification();
           } catch (_) {}
@@ -2748,15 +2903,48 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     return request != null && _isPlaybackRequestCurrent(request);
   }
 
-  // —— Windows 误报 completed 防护 ——
-  // just_audio_windows（WinRT MediaPlayer）在 setUrl() 加载新源时，旧源
-  // 会异步触发一次 completed 事件（或 processingState 短暂变 completed），
-  // 导致 _handlePlaybackCompleted / position 兜底被误触发 → 自动 next() 跳到
-  // 下一首。Android(Media3) 无此行为。播放列表点歌"总切到下一首"即由此引起。
-  // 方案：每次开始加载新源时记录时间戳；completed 兜底切歌若发生在
-  // [guard 窗口]内则判定为误报并忽略。真实播完一首歌必然远超该窗口。
+  // —— completed 误报防护（按平台分流，见 [_inSpuriousCompletedGuardForEvent]）——
+  // just_audio_windows（WinRT MediaPlayer）在 setUrl() 加载新源时，旧源会异步
+  // 补发一次 completed（或处理态短暂变 completed），若不拦就会自动 next() 跳到
+  // 下一首 —— 原修复针对的正是「播放列表点歌总切到下一首」。
+  // Android(Media3) 无此行为：长窗对它没有防护收益，反而把「重载后短时间内
+  // 真实播完」（曲尾附近恢复播放 / CDN 看门狗换源续播）的合法曲尾一并吞掉。
+  // 更糟的是 completed **事件**与位置**兜底**两条检测路径共用本时间戳，被吞后
+  // 两者同时失效：平台停在 completed、位置冻结在 duration，再无任何自愈，
+  // 即偶发「播完当前歌曲不自动续播」的死区。方案：Windows 沿用长窗；
+  // Android 事件路径完全不受时间窗拦截（request 代次 + completionReady 闸门
+  // 已能精确拒收过期事件），兜底路径只留短窗防「刚换源、旧时长残留」瞬态。
   static const Duration _urlLoadGuardWindow = Duration(milliseconds: 3000);
+
+  /// Android 的误报防护短窗（毫秒级）：远小于 [_urlLoadGuardWindow]，只覆盖
+  /// 「刚换源、旧时长残留」的兜底误切。由 Android 事件路径零窗口兜底，短窗
+  /// 不会重新制造「播完不切歌」的死区（两条检测路径至少一路始终可用）。
+  static const Duration _androidCompletedGuardWindow = Duration(milliseconds: 1000);
+
   DateTime _lastUrlLoadStarted = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// completed **事件**路径的误报判定：仅 Windows 有防护期。
+  ///
+  /// WinRT 在 setUrl() 加载新源时会异步补发旧源的 completed，落在 [_urlLoadGuardWindow]
+  /// 内即判误报并忽略。Android(Media3) 不补发此类事件，绝不能在这里加时间窗——
+  /// 合法的曲尾 completed 会被吞掉，而位置兜底（见 [_positionFallbackLoadGuardActive]）
+  /// 同时被挡在窗外，形成无自愈死区。
+  bool _inSpuriousCompletedGuardForEvent() =>
+      _isWindowsPlatform &&
+      DateTime.now().difference(_lastUrlLoadStarted) < _urlLoadGuardWindow;
+
+  /// 位置**兜底**路径的防护期判定：按平台取不同窗口。
+  ///
+  /// Windows 保持 [_urlLoadGuardWindow] 长窗；Android 只留
+  /// [_androidCompletedGuardWindow] 短窗——兜底是 completed 事件丢失时唯一
+  /// 的检测路径（fork 注释所称的「Media3 偶发」），必须给它留活路，否则 R1
+  /// 的「曲尾重载后自然播完」场景连兜底也进不来。窗口按平台参数化后，事件
+  /// 路径在 Android 上已完全放开，两路不会同时失效。
+  bool _positionFallbackLoadGuardActive() =>
+      DateTime.now().difference(_lastUrlLoadStarted) <
+      (_isWindowsPlatform
+          ? _urlLoadGuardWindow
+          : _androidCompletedGuardWindow);
 
   /// completed 事件被丢弃的原因，供诊断日志定位（Issue #190）。
   ///
@@ -2790,10 +2978,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       print('[Crossfade] 忽略 completed：淡化进行中');
       return;
     }
-    // Windows 误报 completed 防护：just_audio_windows 在 setUrl() 加载新源时，
-    // 旧源会异步补发一次 completed，若距上次加载源 < 窗口则判为误报并忽略，
-    // 避免"播放列表点歌总自动跳到下一首"。真实播完一首歌必然远超该窗口。
-    if (DateTime.now().difference(_lastUrlLoadStarted) < _urlLoadGuardWindow) {
+    // 误报防护仅在 Windows 生效（见 [_inSpuriousCompletedGuardForEvent]）：
+    // just_audio_windows 在 setUrl() 加载新源时，旧源会异步补发一次 completed，
+    // 落在 3s 窗口内判为误报并忽略，避免「播放列表点歌总自动跳到下一首」。
+    // Android(Media3) 无此行为，且若在此吞掉合法曲尾，completed 事件与位置
+    // 兜底两条检测路径会一起失效、无任何自愈 —— 即 R1「播完不续播」的死区。
+    if (_inSpuriousCompletedGuardForEvent()) {
       print(
         '[PlaybackCompleted] ignored: within ${_urlLoadGuardWindow} of url '
         'load (likely spurious completed on Windows)',
@@ -2886,12 +3076,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
           _abnormalEndRetries++;
           if (_abnormalEndRetries > _maxAbnormalRetries) {
-            // 重试次数耗尽，停止播放
+            // 重试次数耗尽，停止播放（网络类失败转静默自愈）
             _abnormalEndRetries = 0;
             _retryingSongId = null;
             await _audioService?.pause();
             if (!_isPlaybackRequestCurrent(playbackRequest)) return;
-            _resolveError = '播放失败，请检查网络';
+            _failResolution(_currentSong, '播放失败，请检查网络');
             notifyListeners();
             return;
           }
@@ -2901,9 +3091,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           final result = await _resolveAndPlayCurrentSong(seekTo: lastPosition);
           if (result == _PlaybackRequestResult.canceled) return;
           if (result.succeeded) {
-            _resolveError = null;
+            _clearResolveError();
           } else {
-            _resolveError = _resolveErrorText(_currentSong);
+            _failResolution(_currentSong, _resolveErrorText(_currentSong));
           }
           notifyListeners();
         } else {
@@ -2990,13 +3180,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
               final result = await _resolveAndPlayCurrentSong();
               if (result == _PlaybackRequestResult.canceled) return;
               if (!result.succeeded) {
-                _resolveError = _resolveErrorText(_currentSong);
+                _failResolution(_currentSong, _resolveErrorText(_currentSong));
               }
             } else {
-              // 仅一首歌时直接停止
+              // 仅一首歌时直接停止（网络类失败转静默自愈）
               await _audioService?.pause();
               if (!_isPlaybackRequestCurrent(playbackRequest)) return;
-              _resolveError = '播放失败，请检查网络';
+              _failResolution(_currentSong, '播放失败，请检查网络');
             }
             // 队列结构已变化（删除故障歌）：持久化队列本体
             _savePlaylistIfChanged();
@@ -3039,9 +3229,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           final result = await _resolveAndPlayCurrentSong(seekTo: seekTo);
           if (result == _PlaybackRequestResult.canceled) return;
           if (result.succeeded) {
-            _resolveError = null;
+            _clearResolveError();
           } else {
-            _resolveError = _resolveErrorText(_currentSong);
+            _failResolution(_currentSong, _resolveErrorText(_currentSong));
           }
           // 队列结构可能已变化（随机模式播完重排）：持久化队列本体
           _savePlaylistIfChanged();
@@ -3063,6 +3253,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _retryFailedFlight.invalidate();
     _failedRecoveryBudget.reset(_currentSong?.id);
     _stopRetryFailedTimer();
+    // 用户切歌：旧歌的网络自愈会话一并作废（新歌失败时另起）。
+    _networkRecoverySongId = null;
+    _networkFailureToasted = false;
     _abnormalEndRetries = 0;
     _retryingSongId = null;
     _actualPlayingQuality = null;
@@ -3222,7 +3415,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         _rateCheckPos = Duration.zero;
         _rateCheckTime = DateTime.now();
         _rateCheckSeenPlay = false;
-        _resolveError = null;
+        _clearResolveError();
         recoveryOutcome = 'recovered';
         debugPrint('[CdnStall] URL 刷新成功，从 ${stallPos.inSeconds}s 续播');
       } else {
@@ -3351,7 +3544,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         _rateCheckPos = Duration.zero;
         _rateCheckTime = DateTime.now();
         _rateCheckSeenPlay = false;
-        _resolveError = null;
+        _clearResolveError();
         recoveryOutcome = 'recovered';
         debugPrint(
           '[CdnStall] 降级成功，从 ${stallPos.inSeconds}s 以 '
@@ -3915,6 +4108,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     final fromIndex = _currentIndex;
     try {
       // 复用 Windows 误报 completed 的防护窗口：新歌刚起播时不做位置兜底切歌
+      //（Android 上窗口为短窗，成因见 [_inSpuriousCompletedGuardForEvent]）。
       _lastUrlLoadStarted = DateTime.now();
       // 作废可能仍在跑的暂停淡入/淡出循环：它们会往播放器写音量，
       // 和淡化斜坡抢同一个 setVolume 通道
@@ -3986,7 +4180,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _currentIndex = index;
     _currentSong = song;
     _actualPlayingQuality = quality;
-    _resolveError = null;
+    // 交叉淡化接管新歌：清掉旧歌可能残留的失败态/自愈会话。
+    _clearResolveError();
     // 新歌此刻已经播了半个淡化时长，用它的真实进度而不是 0
     _updatePosition(_audioService?.position ?? Duration.zero);
     _recordHistory(song);
@@ -4082,7 +4277,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _playlist = [song];
     _originalPlaylist = [song];
     _currentIndex = 0;
-    _resolveError = null;
+    _clearResolveError();
     _updatePosition(Duration.zero);
     _recordHistory(song);
     _updateNotification();
@@ -4096,7 +4291,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
       if (!_isPlaybackRequestCurrent(playbackRequest)) return;
       if (playbackUrl == null || playbackUrl.isEmpty) {
-        _resolveError = _resolveErrorText(song);
+        _failResolution(song, _resolveErrorText(song));
         notifyListeners();
         return;
       }
@@ -4156,7 +4351,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
             );
             return;
           }
-          _resolveError = _resolveErrorText(_currentSong);
+          _failResolution(_currentSong, _resolveErrorText(_currentSong));
           _isPlaying = false;
           notifyListeners();
         },
@@ -4216,7 +4411,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _originalPlaylist = [song];
     _currentIndex = 0;
     _isResolvingUrl = true;
-    _resolveError = null;
+    _clearResolveError();
     _updatePosition(Duration.zero);
     _recordHistory(song);
     _updateNotification();
@@ -4316,7 +4511,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         notifyListeners();
         // 拿不到播放地址：先尝试曲库 MV 音轨兜底（成功即已接管播放）
         if (!await _tryMvAudioFallback(song, request: request)) {
-          _resolveError = _resolveErrorText(song);
+          _failResolution(song, _resolveErrorText(song));
           notifyListeners();
         }
       }
@@ -4324,7 +4519,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _isResolvingUrl = false;
       notifyListeners();
       if (!await _tryMvAudioFallback(song, request: request)) {
-        _resolveError = e.toString();
+        _failResolution(song, e.toString());
         notifyListeners();
       }
     }
@@ -4368,7 +4563,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _loadPlaylist(songs, startIndex);
     _currentSong = _playlist[_currentIndex];
-    _resolveError = null;
+    _clearResolveError();
     _updatePosition(Duration.zero);
     _recordHistory(_currentSong!);
     _savePlaylistIfChanged();
@@ -4413,20 +4608,25 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           }
         } else {
           _isResolvingUrl = false;
-          _resolveError = _resolveErrorText(_currentSong);
-          final failedSong = _currentSong!;
+          // 网络/API 类失败已转后台自愈（自动重试 / 网络恢复后续播）：
+          // 不弹「歌曲无法播放」窗、不自动跳下一首，由自愈会话决定去留。
+          final recovering =
+              _failResolution(_currentSong, _resolveErrorText(_currentSong));
           notifyListeners();
-          // 先弹窗提示，随即切到下一首（不阻塞）
-          _showUnplayableSongDialog(failedSong);
-          // 听书付费章节失败不自动跳下一曲：整专辑大概率连续付费，
-          // 自动切会疯狂刷日志且无意义，由用户手动选择。
-          if (_playlist.length > 1 && !failedSong.isLongAudio) {
-            await next(autoPlay: true);
+          if (!recovering) {
+            final failedSong = _currentSong!;
+            // 先弹窗提示，随即切到下一首（不阻塞）
+            _showUnplayableSongDialog(failedSong);
+            // 听书付费章节失败不自动跳下一曲：整专辑大概率连续付费，
+            // 自动切会疯狂刷日志且无意义，由用户手动选择。
+            if (_playlist.length > 1 && !failedSong.isLongAudio) {
+              await next(autoPlay: true);
+            }
           }
         }
       } catch (e) {
         _isResolvingUrl = false;
-        _resolveError = e.toString();
+        _failResolution(_currentSong, e.toString());
         notifyListeners();
       }
 
@@ -4438,7 +4638,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       );
       if (!_isPlaybackRequestCurrent(playbackRequest)) return;
       if (playbackUrl == null || playbackUrl.isEmpty) {
-        _resolveError = _resolveErrorText(_currentSong);
+        _failResolution(_currentSong, _resolveErrorText(_currentSong));
         notifyListeners();
         return;
       }
@@ -4491,7 +4691,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _loadPlaylist(songs, startIndex);
     _currentSong = _playlist[_currentIndex];
     _isResolvingUrl = true;
-    _resolveError = null;
+    _clearResolveError();
     _updatePosition(Duration.zero);
     _recordHistory(_currentSong!);
     // 整表替换队列后必须落盘：私人FM（发现页区块 / 桌面小部件）与在线歌单
@@ -4559,21 +4759,25 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           );
         } else {
           _isResolvingUrl = false;
-          _resolveError = _resolveErrorText(_currentSong);
-          final failedSong = _currentSong!;
+          // 网络/API 类失败转后台自愈：不弹「歌曲无法播放」窗、不自动跳下一首。
+          final recovering =
+              _failResolution(_currentSong, _resolveErrorText(_currentSong));
           notifyListeners();
-          // 先弹窗提示，随即切到下一首（不阻塞）
-          _showUnplayableSongDialog(failedSong);
-          // 听书付费章节失败不自动跳下一曲：整专辑大概率连续付费，
-          // 自动切会疯狂刷日志且无意义，由用户手动选择。
-          if (_playlist.length > 1 && !failedSong.isLongAudio) {
-            await next(autoPlay: true);
+          if (!recovering) {
+            final failedSong = _currentSong!;
+            // 先弹窗提示，随即切到下一首（不阻塞）
+            _showUnplayableSongDialog(failedSong);
+            // 听书付费章节失败不自动跳下一曲：整专辑大概率连续付费，
+            // 自动切会疯狂刷日志且无意义，由用户手动选择。
+            if (_playlist.length > 1 && !failedSong.isLongAudio) {
+              await next(autoPlay: true);
+            }
           }
         }
       }
     } catch (e) {
       _isResolvingUrl = false;
-      _resolveError = e.toString();
+      _failResolution(_currentSong, e.toString());
       notifyListeners();
     }
 
@@ -4704,7 +4908,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _loadPlaylist(songs, startIndex);
     _currentSong = _playlist[_currentIndex];
     _isResolvingUrl = true;
-    _resolveError = null;
+    _clearResolveError();
     _updatePosition(Duration.zero);
     _recordHistory(_currentSong!);
     // 整表替换队列后必须落盘（同 playOnlinePlaylist：云盘列表同样需要
@@ -4731,12 +4935,12 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         _extractCloudArtwork(resolvedSong, url);
       } else {
         _isResolvingUrl = false;
-        _resolveError = '无法获取云盘播放链接';
+        _failResolution(_currentSong, '无法获取云盘播放链接');
         notifyListeners();
       }
     } catch (e) {
       _isResolvingUrl = false;
-      _resolveError = e.toString();
+      _failResolution(_currentSong, e.toString());
       notifyListeners();
     }
 
@@ -4915,7 +5119,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       return false;
     }
     _isPlayingMvAudio = true;
-    _resolveError = null;
+    _clearResolveError();
     for (final url in urls) {
       if (!isCurrent()) return false;
       final ok = await _setUrlAndPlay(
@@ -4952,7 +5156,9 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     if (isCurrent() && !_isDisposed) {
       _isPlaying = false;
       _isResolvingUrl = false;
-      _resolveError = '播放失败，请重试';
+      // 在线歌曲的网络/API 类失败交自愈会话（静默自动重试）；确定性失败
+      // （含无可用 MV 音轨）维持常驻错误条。
+      _failResolution(_currentSong, '播放失败，请重试');
       notifyListeners();
       try {
         _updateNotification();
@@ -5119,7 +5325,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
               unawaited(_tryMvAudioFallback(song, request: request));
               return;
             }
-            _resolveError = _resolveErrorText(song);
+            _failResolution(song, _resolveErrorText(song));
             _isPlaying = false;
             notifyListeners();
           },
@@ -5151,7 +5357,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         _isPlaying = false;
         _isResolvingUrl = false;
         _playbackNotReady = false;
-        _resolveError = '播放失败，请重试';
+        // 网络类失败由自愈会话接管（自动重试 / toast），不投放红色错误条。
+        _failResolution(song, '播放失败，请重试');
         notifyListeners();
         try {
           _updateNotification();
@@ -5311,7 +5518,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (error) {
       if (!_isPlaybackRequestCurrent(request)) return;
       _isPlaying = false;
-      _resolveError = _resolveErrorText(_currentSong);
+      _failResolution(_currentSong, _resolveErrorText(_currentSong));
       _logPlaybackEvent(
         'play.command.error',
         request: request,
@@ -5388,7 +5595,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _playlist[index] = _currentSong!;
     }
     _failedRecoveryBudget.reset(previousSong.id);
-    _resolveError = null;
+    _clearResolveError();
     _isPlaying = true;
     notifyListeners();
     try {
@@ -5405,7 +5612,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       succeeded = result.succeeded;
       if (!succeeded) {
         _isPlaying = false;
-        _resolveError ??= _resolveErrorText(_currentSong);
+        // 手动重试失败同样按网络类别分流：网络类转自愈会话，其余照旧提示。
+        _failResolution(_currentSong, _resolveErrorText(_currentSong));
       }
       _saveState();
       _updateNotification();
@@ -5421,7 +5629,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
           retryable: true,
         );
         _isPlaying = false;
-        _resolveError = _resolveErrorText(_currentSong);
+        _failResolution(_currentSong, _resolveErrorText(_currentSong));
         _updateNotification();
       }
     } finally {
@@ -5507,7 +5715,8 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       if (!_isPlaybackRequestCurrent(playbackRequest) || _isDisposed) return;
       if (!result.succeeded) {
         _isPlaying = false;
-        _resolveError = _resolveErrorText(_currentSong);
+        // 网络/API 类失败同样转自愈会话（恢复播放被中断时静默重试）。
+        _failResolution(_currentSong, _resolveErrorText(_currentSong));
         notifyListeners();
         _updateNotification();
       }
@@ -5895,11 +6104,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         );
         if (!loaded || !_isPlaybackRequestCurrent(request)) return false;
       } else {
-        _resolveError = _resolveErrorText(_currentSong);
+        // 网络/API 类失败由自愈会话接管（自动重试 / toast）。
+        _failResolution(_currentSong, _resolveErrorText(_currentSong));
         notifyListeners();
         return false;
       }
     } else {
+      // 引擎未就绪属确定性状态错误，维持常驻提示。
       _resolveError = '音频引擎尚未就绪';
       notifyListeners();
       return false;
@@ -6051,7 +6262,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _currentIndex = nextIndex;
       _currentSong = _playlist[nextIndex];
-      _resolveError = null;
+      _clearResolveError();
       // 诊断日志：next 切歌
       // ignore: avoid_print
       print('[D切歌] next: _currentIndex=$_currentIndex');
@@ -6072,8 +6283,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         notifyListeners();
         return;
       }
-      // 无法获取链接，继续尝试下一首
-      _resolveError = _resolveErrorText(_currentSong);
+      // 无法获取链接，继续尝试下一首。
+      // 网络类失败不在此进会话——链内重试由本循环承担，避免请求风暴。
+      _failResolution(
+        _currentSong,
+        _resolveErrorText(_currentSong),
+        stayOnFailure: false,
+      );
 
       // 非列表循环模式下，到末尾就停止尝试
       if (_currentIndex >= _playlist.length - 1 &&
@@ -6082,7 +6298,10 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    // 所有歌曲都试过仍失败
+    // 所有歌曲都试过仍失败：队尾这首若属网络类，转入静默自愈（只 toast
+    // 一次），不留常驻红色条；确定性失败照旧展示。
+    _failResolution(_currentSong, _resolveErrorText(_currentSong));
+
     _updateNotification();
     notifyListeners();
   }
@@ -6126,7 +6345,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
       _currentIndex = prevIndex;
       _currentSong = _playlist[prevIndex];
-      _resolveError = null;
+      _clearResolveError();
       _updatePosition(Duration.zero);
       _recordHistory(_currentSong!);
 
@@ -6141,8 +6360,15 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       if (!_isPlaybackRequestCurrent(playbackRequest)) return;
-      _resolveError = _resolveErrorText(_currentSong);
+      // 网络类失败不进会话（链内重试由本循环承担），只登记失败态。
+      _failResolution(
+        _currentSong,
+        _resolveErrorText(_currentSong),
+        stayOnFailure: false,
+      );
     }
+    // 整圈都失败：末曲若属网络类转静默自愈，只 toast 一次。
+    _failResolution(_currentSong, _resolveErrorText(_currentSong));
     _saveState();
     notifyListeners();
   }
@@ -6177,7 +6403,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
 
     _currentIndex = index;
     _currentSong = _playlist[index];
-    _resolveError = null;
+    _clearResolveError();
     // 诊断日志：切歌目标
     // ignore: avoid_print
     print('[D切歌] playSongAt index=$index 实际_currentIndex=$_currentIndex');
@@ -6192,13 +6418,17 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     );
     if (!_isPlaybackRequestCurrent(playbackRequest)) return;
     if (!result.succeeded) {
-      _resolveError = _resolveErrorText(_currentSong);
-      final failedSong = _currentSong!;
-      _showUnplayableSongDialog(failedSong);
-      // 听书付费章节失败不自动跳下一曲：整专辑大概率连续付费，
-      // 自动切会疯狂刷日志且无意义，由用户手动选择。
-      if (_playlist.length > 1 && !failedSong.isLongAudio) {
-        await next(autoPlay: autoPlay);
+      // 网络/API 类失败转后台自愈：不弹「歌曲无法播放」窗、不自动跳下一首。
+      final recovering =
+          _failResolution(_currentSong, _resolveErrorText(_currentSong));
+      if (!recovering) {
+        final failedSong = _currentSong!;
+        _showUnplayableSongDialog(failedSong);
+        // 听书付费章节失败不自动跳下一曲：整专辑大概率连续付费，
+        // 自动切会疯狂刷日志且无意义，由用户手动选择。
+        if (_playlist.length > 1 && !failedSong.isLongAudio) {
+          await next(autoPlay: autoPlay);
+        }
       }
     }
   }
@@ -6236,7 +6466,7 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
     _isPlaying = false;
     _updatePosition(Duration.zero);
     _duration = null;
-    _resolveError = null;
+    _clearResolveError();
     _observeStateWrite(_stateRepo.clearState(), 'clear');
     _updateNotification();
     notifyListeners();
@@ -6426,13 +6656,13 @@ class PlayerProvider extends ChangeNotifier with WidgetsBindingObserver {
       _isPlaying = false;
       _updatePosition(Duration.zero);
       _duration = null;
-      _resolveError = null;
+      _clearResolveError();
     } else if (wasCurrent) {
       // 删除的就是当前播放歌曲：跳到（原 index 处的）新歌
       // index 可能在删除后越界，需要 clamp
       _currentIndex = index.clamp(0, _playlist.length - 1);
       _currentSong = _playlist[_currentIndex];
-      _resolveError = null;
+      _clearResolveError();
     } else if (index < _currentIndex) {
       // 删除的在当前歌曲之前：索引前移
       _currentIndex--;

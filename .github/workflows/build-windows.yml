@@ -58,7 +58,7 @@ jobs:
 
       # 6. Flutter Windows 构建（产出 exe）
       - name: Flutter build windows
-        run: flutter build windows --release --dart-define=APP_VERSION=ci-${{ github.sha }}
+        run: flutter build windows --release --dart-define=APP_VERSION=ci-${{ github.sha }} --dart-define=MD3_RENDER_ENGINE=impeller
 
       # 7. 复制 kugou_server.dll 到 exe 同目录（运行时 dart:ffi 加载）
       - name: Copy kugou_server.dll to Release

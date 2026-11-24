@@ -75,25 +75,71 @@ add_subdirectory("runner")
 # 本机因 packages/ 有上次构建的残留而侥幸成功，CI 全新 clone 必然失败。
 # 这里在【配置期】提前装好，保证生成 vcxproj 时 .targets 已存在。
 # 版本须与 video_player_win/windows/CMakeLists.txt 的 WIL_VERSION 保持一致。
+# === 统一解析 NuGet CLI（必须在 include(flutter/generated_plugins.cmake) 之前） ===
+# 三处依赖都要 nuget：本文件装 WIL、video_player_win 装 WIL（构建期自定义目标）、
+# permission_handler_windows 装 CppWinRT（FetchContent 拉 v6.0.0）。它们都是先
+# find_program(NUGET nuget)，找不到才各自下载到【工程目录内】。
+# ⚠️ 本机沙箱限制「从工作区路径启动的进程」：放在 build/ 下的 nuget 无法获取
+# %TEMP%\NuGetScratch 配置锁，报 "Unable to obtain lock file access"；同一二进制放到
+# 工程外正常（PITFALLS 铁律 100）。因此这里统一解析到工程外，并把结果写成 cache 变量
+# NUGET —— 插件里的 find_program 命中已有 cache 值后不再搜索、也不再下载。
+find_program(MD3_NUGET_EXE nuget)
+if(NOT MD3_NUGET_EXE)
+  if(DEFINED ENV{LOCALAPPDATA})
+    set(MD3_NUGET_DIR "$ENV{LOCALAPPDATA}/md3music-tools")
+  else()
+    set(MD3_NUGET_DIR "${CMAKE_BINARY_DIR}")
+  endif()
+  set(MD3_NUGET_EXE "${MD3_NUGET_DIR}/nuget.exe")
+  set(MD3_NUGET_VERSION "6.11.1")
+  set(MD3_NUGET_URL "https://dist.nuget.org/win-x86-commandline/v${MD3_NUGET_VERSION}/nuget.exe")
+  set(MD3_NUGET_SHA256 "c0ddc9cb0633c4607da7e8028eb4f91248c8b74e45a68b0c79fcfa7d78c2a481")
+  set(_nuget_ready FALSE)
+  if(EXISTS "${MD3_NUGET_EXE}")
+    file(SIZE "${MD3_NUGET_EXE}" _nuget_size)
+    if(_nuget_size GREATER 0)
+      set(_nuget_ready TRUE)
+    endif()
+  endif()
+  if(NOT _nuget_ready)
+    file(MAKE_DIRECTORY "${MD3_NUGET_DIR}")
+    message(STATUS "下载 nuget ${MD3_NUGET_VERSION} ...")
+    set(_nuget_tmp "${MD3_NUGET_EXE}.download")
+    file(REMOVE "${_nuget_tmp}")
+    # 先按默认 TLS 校验下载；本机网络（经本地代理）无法完成证书吊销检查
+    # （schannel: CRYPT_E_NO_REVOCATION_CHECK）时退到 TLS_VERIFY OFF 重试，
+    # 完整性由下面的 SHA256 比对保证，等价于固定哈希校验。
+    file(DOWNLOAD "${MD3_NUGET_URL}" "${_nuget_tmp}" TLS_VERIFY ON STATUS _nuget_status)
+    list(GET _nuget_status 0 _nuget_code)
+    if(NOT _nuget_code EQUAL 0)
+      message(STATUS "TLS 校验失败（${_nuget_status}），改用 TLS_VERIFY OFF 重试（SHA256 仍校验）")
+      file(DOWNLOAD "${MD3_NUGET_URL}" "${_nuget_tmp}" TLS_VERIFY OFF STATUS _nuget_status)
+      list(GET _nuget_status 0 _nuget_code)
+    endif()
+    set(_nuget_actual "")
+    if(EXISTS "${_nuget_tmp}")
+      file(SHA256 "${_nuget_tmp}" _nuget_actual)
+    endif()
+    if(_nuget_code EQUAL 0 AND _nuget_actual STREQUAL "${MD3_NUGET_SHA256}")
+      file(RENAME "${_nuget_tmp}" "${MD3_NUGET_EXE}")
+    else()
+      file(REMOVE "${_nuget_tmp}")
+      message(FATAL_ERROR
+        "nuget.exe 获取失败（status=${_nuget_status}，实际 SHA256=${_nuget_actual}）。\n"
+        "请手动下载 ${MD3_NUGET_URL} 保存为 ${MD3_NUGET_EXE} 后重新构建。")
+    endif()
+  endif()
+endif()
+set(NUGET "${MD3_NUGET_EXE}" CACHE FILEPATH "NuGet CLI（顶层统一注入，供插件复用）" FORCE)
+
 if(EXISTS "${FLUTTER_MANAGED_DIR}/ephemeral/.plugin_symlinks/video_player_win")
   set(WIL_VERSION "1.0.220914.1")
   set(WIL_TARGETS_FILE
     "${CMAKE_BINARY_DIR}/packages/Microsoft.Windows.ImplementationLibrary/build/native/Microsoft.Windows.ImplementationLibrary.targets")
   if(NOT EXISTS "${WIL_TARGETS_FILE}")
-    find_program(NUGET_EXE nuget)
-    if(NOT NUGET_EXE)
-      set(NUGET_EXE "${CMAKE_BINARY_DIR}/nuget.exe")
-      if(NOT EXISTS "${NUGET_EXE}")
-        message(STATUS "下载 nuget.exe ...")
-        file(DOWNLOAD
-          "https://dist.nuget.org/win-x86-commandline/v5.10.0/nuget.exe"
-          "${NUGET_EXE}"
-          EXPECTED_HASH SHA256=852b71cc8c8c2d40d09ea49d321ff56fd2397b9d6ea9f96e532530307bbbafd3)
-      endif()
-    endif()
     message(STATUS "预下载 WIL ${WIL_VERSION}（video_player_win 依赖）...")
     execute_process(
-      COMMAND "${NUGET_EXE}" install Microsoft.Windows.ImplementationLibrary
+      COMMAND "${NUGET}" install Microsoft.Windows.ImplementationLibrary
               -Version ${WIL_VERSION} -ExcludeVersion
               -OutputDirectory "${CMAKE_BINARY_DIR}/packages"
       RESULT_VARIABLE WIL_INSTALL_RESULT
@@ -238,10 +284,11 @@ set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 
 # 仅 Windows 便携包携带字体；不写入 pubspec.yaml，Android/TV APK 不包含它。
+# MD3MusicSans：Noto Sans SC/Source Han Sans 的可商用子集（SIL OFL 1.1，
+# 按 OFL 条件 3 改名，不使用保留字体名 Source），全局 UI / 歌词 / 原生悬浮窗共用。
 install(FILES
-  "${CMAKE_SOURCE_DIR}/runner/fonts/SOURCEHANSANSCN-MEDIUM.OTF"
-  "${CMAKE_SOURCE_DIR}/runner/fonts/LICENSE-APACHE-2.0.txt"
-  "${CMAKE_SOURCE_DIR}/runner/fonts/NOTICE.txt"
+  "${CMAKE_SOURCE_DIR}/runner/fonts/MD3MusicSans.ttf"
+  "${CMAKE_SOURCE_DIR}/runner/fonts/OFL.txt"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}/fonts" COMPONENT Runtime)
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"

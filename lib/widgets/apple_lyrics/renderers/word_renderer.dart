@@ -89,6 +89,12 @@ class WordRenderer {
   /// 仅在量化值变化时才 set text + layout，避免每帧 N 次 layout。
   List<int> _lastSetAlphas = const <int>[];
 
+  /// 与 [_lastSetAlphas] 同索引：上次设置文字颜色时用的「渐变赋色」tint RGB。
+  ///
+  /// 「渐变赋色」模式下 tint 随扫光前沿连续变化而 alpha 步进值可能不变，
+  /// 故必须并入缓存键，否则 painter 会带着旧 tint 继续绘制（颜色滞后）。
+  List<int> _lastSetTints = const <int>[];
+
   /// 每个 word index 的当前 alpha 值。
   List<double> _wordAlphas = const <double>[];
 
@@ -140,6 +146,10 @@ class WordRenderer {
   /// 每个强调字内每个字符上次设置的 alpha（量化步进值，同 [_lastSetAlphas]）。
   List<List<int>> _lastSetCharAlphas = const <List<int>>[];
 
+  /// 与 [_lastSetCharAlphas] 同索引：上次设置字符颜色时用的 tint RGB
+  /// （同 [_lastSetTints] 的缓存键理由，渐变赋色模式下防止颜色滞后）。
+  List<List<int>> _lastSetCharTints = const <List<int>>[];
+
   // ============== v6 自驱动波浪状态（逐字 per-word） ==============
   //
   // 波浪相位由帧时钟 dt 每帧推进（脱离播放位置流 _smoothPosMs），保证动画
@@ -184,6 +194,21 @@ class WordRenderer {
   /// null 表示不使用（回退到 LyricLayout.textColorValue）。
   int? _activeColorValue;
 
+  /// 「渐变赋色 / 背景增透」专用条带取色（ARGB int，未经混色 / 明度兜底，
+  /// 由 AppleLyricsView 注入；背景增透时为取样背景色的提亮加饱和结果）。
+  ///
+  /// 非 null 且偏好 fillStyle 为 wordGradient / backgroundBloom 且当前行时，
+  /// 字内渐变的未播端用它、已播端过渡到纯白。它与 [_activeColorValue]（混色
+  /// 结果）**不同源**：整行赋色走混色比例，条带取色直接用注入值。
+  int? _gradientAccentValue;
+
+  /// 上次绘制时注入的 [_gradientAccentValue]（tint 缓存失效判据）。
+  ///
+  /// 注入值低频刷新（背景增透每 ≤500ms 至多一次取样），变化时必须让 tint
+  /// 缓存重建，否则字内渐变停留在旧取样色。-1 哨兵表示"上一帧为空"，与任何
+  /// 真实 ARGB 值都不相等——模式来回切换时同样强制重建。
+  int? _lastGradientAccentValue;
+
   /// 每字辉光判定缓存（行绑定期计算一次）。
   /// 与 [_wordPainters] / [_wordWidths] 同长度同索引。
   /// true 表示该 word 应触发辉光（已通过 duration + 内容过滤）。
@@ -214,6 +239,18 @@ class WordRenderer {
   /// 仅测试：走「图像翻转路径」的绘制次数（验证翻转期不再逐帧画文字）。
   @visibleForTesting
   static int debugFlipImageDraws = 0;
+
+  /// 仅测试：tint 缓存失效（accent 注入值变化重建）的累计次数。
+  ///
+  /// 直接锁定「渐变赋色 / 背景增透」的失效机制：注入值（背景增透的
+  /// 取样刷新）变化时必须触发重建，否则字内渐变停留在旧取样色。
+  /// 逐像素落点依赖扫光/经典几何的中段命中，几何预言脆弱，故锁机制本身。
+  @visibleForTesting
+  int debugTintInvalidationsForTest = 0;
+
+  /// 仅测试：各 word 最近一次 set text 的 tint 键列表（0xRRGGBB）。
+  @visibleForTesting
+  List<int> get debugTintKeysForTest => List<int>.of(_lastSetTints);
 
   /// 渐变路径复用的 Paint 实例（避免每帧新建，减少 GC）。
   /// 渐变路径稳态下每帧只改 shader，0 次 layout。
@@ -674,10 +711,13 @@ class WordRenderer {
     double blurFade = 1.0,
     bool blurActive = true,
     int? activeColorValue,
+    int? gradientAccentValue,
   }) {
     _isActive = isActive;
     _scale = scale;
     _activeColorValue = activeColorValue;
+    // 每帧无条件赋值：视图侧条件不满足时传 null（退回整行赋色历史行为）
+    _gradientAccentValue = gradientAccentValue;
   }
 
   /// 设置强调辉光效果计算器。
@@ -915,6 +955,7 @@ class WordRenderer {
       }
 
       // === Y 偏移动画（上浮特效）===
+      // _maxLiftPx 已含负号（上浮=向上=负偏移，见 _maxLiftPx 定义）。
       final double targetY;
       if (i < currentWordIdx) {
         targetY = maxLiftPx;
@@ -1110,14 +1151,72 @@ class WordRenderer {
           -2,
         );
       }
+      // 渐变赋色 tint 与文字色同源，颜色变化时一并失效（否则 tint 停留在旧混色）
+      _lastSetTints = List<int>.filled(_lastSetTints.length, -2);
+      for (int i = 0; i < _lastSetCharTints.length; i++) {
+        _lastSetCharTints[i] = List<int>.filled(
+          _lastSetCharTints[i].length,
+          -2,
+        );
+      }
       _lastTextColorValue = textColorValue;
       // 辉光精灵**不再**随颜色失效：精灵是「纯白字形 + 固定三层剖面」，
       // 颜色由绘制期 [_glowTint] 逐帧上色。拖动「动态颜色混色比例」时
       // textColorValue 每帧都变，若在此重建精灵会每帧 toImage（真机必掉帧）。
     }
+    // 「渐变赋色 / 背景增透」注入值低频刷新（背景增透每 ≤500ms 至多一次取样）：
+    // 变化时必须重建 tint 缓存，否则字内渐变停留在旧取样色。
+    if (_gradientAccentValue != _lastGradientAccentValue) {
+      debugTintInvalidationsForTest++;
+      _lastGradientAccentValue = _gradientAccentValue ?? -1;
+      _lastSetTints = List<int>.filled(_lastSetTints.length, -2);
+      for (int i = 0; i < _lastSetCharTints.length; i++) {
+        _lastSetCharTints[i] = List<int>.filled(
+          _lastSetCharTints[i].length,
+          -2,
+        );
+      }
+    }
     final int textRed = (textColorValue >> 16) & 0xFF;
     final int textGreen = (textColorValue >> 8) & 0xFF;
     final int textBlue = textColorValue & 0xFF;
+
+    // === 「渐变赋色 / 背景增透」双色通道（歌词动态颜色的赋色方式，默认整行赋色）===
+    // 语义（2026-11-20 定稿，2026-11-22 增背景增透）：
+    // - 已播区 / 扫光带内：未经混色的条带取色（raw*，渐变赋色 = 封面原色、
+    //   背景增透 = 取样背景色的提亮加饱和结果）向白过曝——"取色过曝成白"
+    //   的光学过渡只出现在**渐变过程中**；
+    // - 完全未播区：保持当前行原有颜色（base* = textRGB，即混色结果）
+    //   不变——本功能不改未播部分的颜色。
+    //
+    // 门控：视图注入 [_gradientAccentValue] 非空时，「歌词动态颜色」已开、
+    // 无自定义文字色、条带取色可用（封面提取色或背景取样）。gradientFill 为
+    // false 时 raw* ≡ base* ≡ textRGB，本行全部绘制路径逐像素退化为历史行为。
+    final int? accentArg = _gradientAccentValue;
+    final LyricFillStyle fillStylePref = LyricPreferences.instance.fillStyle;
+    final bool gradientFill =
+        _isActive &&
+        (fillStylePref == LyricFillStyle.wordGradient ||
+            fillStylePref == LyricFillStyle.backgroundBloom) &&
+        accentArg != null;
+    // base*：当前行原有颜色（混色结果）；raw*：条带取色（渐变赋色 = 封面提取
+    // 原色、背景增透 = 取样背景色的提亮加饱和结果），只用于扫光带内的过曝
+    // 过渡。注入值缺失时两者同值（零回归）。
+    // 「渐变赋色」过曝轨迹的取色混白比例（默认 50%，范围正中）：纯取色太鲜艳，
+    // 未播区不受它影响——那里保持原有混色（[textRGB]）。
+    final double gfRatio =
+        LyricPreferences.instance.gradientFillRatio.clamp(0.0, 1.0);
+    // 提取原色经混白稀释后供过曝曲线使用；渐变模式关闭时（accentArg 为
+    // null）与 textRGB 同值，仅为让曲线单一通道口径。
+    final int rawR = accentArg == null
+        ? textRed
+        : mixWithWhiteForTest((accentArg >> 16) & 0xFF, gfRatio);
+    final int rawG = accentArg == null
+        ? textGreen
+        : mixWithWhiteForTest((accentArg >> 8) & 0xFF, gfRatio);
+    final int rawB = accentArg == null
+        ? textBlue
+        : mixWithWhiteForTest(accentArg & 0xFF, gfRatio);
 
     if (line.words.isEmpty) {
       _paintSolidFallback(
@@ -1195,6 +1294,31 @@ class WordRenderer {
         ? _sweepPath!.frontX(_sweepPhase(), feather: sweepLineFeather)
         : 0;
 
+    // === 「渐变赋色」光前沿与过曝曲线参数 ===
+    // 光前沿（行内坐标）：sweep 取扫光前端，classic 取 maskX；前沿无效时
+    // （未开启 / 非当前行渐变 / 行未开唱）为 null，曲线整体退化为原有混色。
+    final double? fillFront =
+        sweepMode ? _sweepFront : (useGradient ? _maskX : null);
+    // 颜色曲线带宽独立且宽于亮度锐带：后方白化余韵 ~1.6em、前方回落 ~1.2em，
+    // 让过曝跨多个字流动，不再逐词跳变（用户 2026-11-20 反馈）。
+    final double bloomW1 = fontSize * 1.6;
+    final double bloomW2 = fontSize * 1.2;
+
+    // 「渐变赋色」过曝取色（行内坐标 [xRow]）：返回 (r,g,b)，曲线不可用
+    // 时返回全 null——调用方回落原有混色（零回归）。
+    (int?, int?, int?) bloomAt(double xRow) {
+      if (!gradientFill || fillFront == null) {
+        return (null, null, null);
+      }
+      final double hB = fillHueBehindForTest(xRow, fillFront, bloomW1);
+      final double hA = fillHueAheadForTest(xRow, fillFront, bloomW2);
+      return (
+        fillBloomColorForTest(rawR, textRed, hB, hA),
+        fillBloomColorForTest(rawG, textGreen, hB, hA),
+        fillBloomColorForTest(rawB, textBlue, hB, hA),
+      );
+    }
+
     for (int i = 0; i < line.words.length; i++) {
       final LyricWord word = line.words[i];
       // AMLL 上浮特效：当前字 Y 偏移（上浮）
@@ -1255,11 +1379,17 @@ class WordRenderer {
           textRed: textRed,
           textGreen: textGreen,
           textBlue: textBlue,
+          accentR: rawR,
+          accentG: rawG,
+          accentB: rawB,
           bright: bright,
           dark: dark,
           transitionStart: transitionStart,
           transitionSpan: transitionSpan,
           useGradient: useGradient,
+          gradientFill: gradientFill,
+          // 光前沿（行内坐标）供过曝曲线取样
+          fillFront: fillFront,
           sweepMode: sweepMode,
           sweepFront: _sweepFront,
           sweepFeather: _sweepFeatherForWord(i, fontSize, rowHeight),
@@ -1284,9 +1414,16 @@ class WordRenderer {
           textRed: textRed,
           textGreen: textGreen,
           textBlue: textBlue,
+          accentR: rawR,
+          accentG: rawG,
+          accentB: rawB,
           bright: bright,
           dark: dark,
           uniformAlpha: i < _wordAlphas.length ? _wordAlphas[i] : dark,
+          gradientFill: gradientFill,
+          // 光前沿与行内起点（过曝曲线按行内绝对位置取样）
+          fillFront: fillFront,
+          rowLeft: i < _wordStartXs.length ? _wordStartXs[i] : 0,
         );
       } else {
         // === 非强调字：整词渲染（原 alpha 路径）===
@@ -1342,15 +1479,24 @@ class WordRenderer {
           // === 均匀路径 ===
           final double uniformAlpha = (leftAlpha + rightAlpha) * 0.5;
           final int alphaStep = (uniformAlpha * 20).round();
-          if (_lastSetAlphas[i] != alphaStep) {
-            // 量化值变化或从渐变路径切换过来：重新 set text + layout
+          // 「渐变赋色」均匀 tint：取字中心的过曝曲线色——后方白化、
+          // 前沿原色、前方回原混色；曲线不可用（无光前沿）时为原有混色。
+          final double center =
+              (i < _wordStartXs.length ? _wordStartXs[i] : 0) + width / 2;
+          final (int? br, int? bg2, int? bb) = bloomAt(center);
+          int tintR = br ?? textRed;
+          int tintG = bg2 ?? textGreen;
+          int tintB = bb ?? textBlue;
+          final int tintKey = (tintR << 16) | (tintG << 8) | tintB;
+          if (_lastSetAlphas[i] != alphaStep || _lastSetTints[i] != tintKey) {
+            // 量化值 / tint 变化或从渐变路径切换过来：重新 set text + layout
             painter.text = TextSpan(
               text: word.text,
               style: LyricLayout.paintStyle(
                 color: Color.fromRGBO(
-                  textRed,
-                  textGreen,
-                  textBlue,
+                  tintR,
+                  tintG,
+                  tintB,
                   uniformAlpha,
                 ),
                 fontSize: fontSize,
@@ -1359,11 +1505,12 @@ class WordRenderer {
             );
             painter.layout();
             _lastSetAlphas[i] = alphaStep;
+            _lastSetTints[i] = tintKey;
           }
           _wordGlyphPaint.colorFilter = _wordGlyphTint(
-            textRed,
-            textGreen,
-            textBlue,
+            tintR,
+            tintG,
+            tintB,
             uniformAlpha,
           );
           if (!_blitWordGlyph(
@@ -1416,10 +1563,28 @@ class WordRenderer {
           }
           // 复用 _gradientPaint 实例，只改 shader 和 blendMode。
           // 注意：不要对渐变 alpha 做量化缓存（曾引入 5% 可见阶跃闪烁 + 频繁清空重建反而卡顿）。
+          //
+          // 「渐变赋色」端点取字左右边缘的过曝曲线色（与 alpha 的过渡带
+          // 几何解耦）：曲线只看行内绝对位置，相邻字共享边界两侧同值，
+          // 跨字连贯流动；未播端回原混色，不改动。
+          final double wordStartX = i < _wordStartXs.length ? _wordStartXs[i] : 0;
+          final double wordEndX = wordStartX + width;
+          final (int? cr, int? cg, int? cb) = bloomAt(wordStartX);
+          final (int? dr, int? dg, int? db) = bloomAt(wordEndX);
           _gradientPaint.shader = LinearGradient(
             colors: [
-              Color.fromRGBO(textRed, textGreen, textBlue, leftAlpha),
-              Color.fromRGBO(textRed, textGreen, textBlue, rightAlpha),
+              Color.fromRGBO(
+                cr ?? textRed,
+                cg ?? textGreen,
+                cb ?? textBlue,
+                leftAlpha,
+              ),
+              Color.fromRGBO(
+                dr ?? textRed,
+                dg ?? textGreen,
+                db ?? textBlue,
+                rightAlpha,
+              ),
             ],
             stops: const <double>[0.0, 1.0],
           ).createShader(wordRect);
@@ -1709,6 +1874,15 @@ class WordRenderer {
   ///   alpha 快路径，零 saveLayer。
   ///
   /// 仅 [LyricFillMode.sweep] 走本方法；classic 路径不进这里。
+  ///
+  /// 「渐变赋色」（[gradientFill] 为 true）时的颜色口径：
+  /// - 亮度锐带（ramp 的 alpha）保持扫光原有的窄羽化；带内颜色按各 stop 的
+  ///   行内位置取过曝曲线：后方白化 → 光前沿封面原色 → 前方回原有混色。
+  ///   曲线带宽宽于锐带，颜色跨多个字流动，不逐词跳变；
+  /// - 完全未播区（退化均匀 tint / 曲线远前方）：保持原有混色，本功能不改它。
+  ///
+  /// [fillFront] 为光前沿行内坐标（null = 曲线不可用）；[rowLeft] 为该词
+  /// 行内起点（曲线按行内绝对位置取样，跨字连贯）。
   void _paintSweepWord(
     Canvas canvas, {
     required TextPainter painter,
@@ -1723,9 +1897,16 @@ class WordRenderer {
     required int textRed,
     required int textGreen,
     required int textBlue,
+    // 未经混色的封面提取色（仅过曝曲线使用；未注入时与 textRGB 同值）
+    required int accentR,
+    required int accentG,
+    required int accentB,
     required double bright,
     required double dark,
     required double uniformAlpha,
+    required bool gradientFill,
+    required double? fillFront,
+    required double rowLeft,
   }) {
     final Rect wordRect = Rect.fromLTWH(
       wordX,
@@ -1733,10 +1914,27 @@ class WordRenderer {
       width,
       fontSize * rowHeight,
     );
+    // 「渐变赋色」过曝取色（行内坐标）：曲线不可用时返回 null（回落混色）。
+    // 曲线带宽（~1.6em 白化余韵 / ~1.2em 前方回落）宽于亮度锐带，颜色跨多个
+    // 字流动，不再逐词跳变；只看行内绝对位置 → 相邻字共享边界同值。
+    (int?, int?, int?) bloomAt(double xRow) {
+      if (!gradientFill || fillFront == null) {
+        return (null, null, null);
+      }
+      final double hB = fillHueBehindForTest(xRow, fillFront, fontSize * 1.6);
+      final double hA = fillHueAheadForTest(xRow, fillFront, fontSize * 1.2);
+      return (
+        fillBloomColorForTest(accentR, textRed, hB, hA),
+        fillBloomColorForTest(accentG, textGreen, hB, hA),
+        fillBloomColorForTest(accentB, textBlue, hB, hA),
+      );
+    }
     final ({List<double> stops, List<Color> colors})? ramp = sweepRampFor(
       rect: wordRect,
       front: front,
       feather: feather,
+      // 颜色不用 ramp 固定端点：按各 stop 的行内位置过曝取样（见下）；
+      // 此处两端色仅作占位，alpha 沿用（亮度锐带保持扫光原观感）。
       active: Color.fromRGBO(textRed, textGreen, textBlue, bright),
       inactive: Color.fromRGBO(textRed, textGreen, textBlue, dark),
       rtl: false, // 本仓歌词按 LTR 排版（TextDirection.ltr）
@@ -1744,14 +1942,22 @@ class WordRenderer {
     if (ramp == null) {
       // 退化：均匀 alpha（与 classic 均匀路径同款量化缓存，避免每帧 layout）
       final int alphaStep = (uniformAlpha * 20).round();
-      if (_lastSetAlphas[wordIndex] != alphaStep) {
+      // 「渐变赋色」退化 tint：取字中心曲线色——后方白化、前沿原色、
+      // 前方回原有混色；曲线不可用时保持原有混色，不改未播颜色。
+      final (int? br, int? bg2, int? bb) = bloomAt(rowLeft + width / 2);
+      int tintR = br ?? textRed;
+      int tintG = bg2 ?? textGreen;
+      int tintB = bb ?? textBlue;
+      final int tintKey = (tintR << 16) | (tintG << 8) | tintB;
+      if (_lastSetAlphas[wordIndex] != alphaStep ||
+          _lastSetTints[wordIndex] != tintKey) {
         painter.text = TextSpan(
           text: painter.text?.toPlainText(),
           style: LyricLayout.paintStyle(
             color: Color.fromRGBO(
-              textRed,
-              textGreen,
-              textBlue,
+              tintR,
+              tintG,
+              tintB,
               uniformAlpha,
             ),
             fontSize: fontSize,
@@ -1760,11 +1966,12 @@ class WordRenderer {
         );
         painter.layout();
         _lastSetAlphas[wordIndex] = alphaStep;
+        _lastSetTints[wordIndex] = tintKey;
       }
       _wordGlyphPaint.colorFilter = _wordGlyphTint(
-        textRed,
-        textGreen,
-        textBlue,
+        tintR,
+        tintG,
+        tintB,
         uniformAlpha,
       );
       if (!_blitWordGlyph(
@@ -1807,8 +2014,24 @@ class WordRenderer {
     )) {
       painter.paint(canvas, Offset(wordX, wordY)); // dst = 白色文字
     }
+    // 「渐变赋色」：按各 stop 的行内位置过曝取样，alpha 取 ramp 原值
+    // （亮度锐带保持扫光原观感）。曲线不可用时 bloomAt 全 null → 逐像素
+    // 等同 ramp 原始两端色（零回归）。
+    final List<Color> sweepColors = <Color>[];
+    for (int s = 0; s < ramp.stops.length; s++) {
+      final (int? sr, int? sg, int? sb) =
+          bloomAt(rowLeft + ramp.stops[s] * width);
+      sweepColors.add(
+        Color.fromRGBO(
+          sr ?? textRed,
+          sg ?? textGreen,
+          sb ?? textBlue,
+          (((ramp.colors[s].toARGB32() >>> 24) & 0xFF) / 255.0),
+        ),
+      );
+    }
     _gradientPaint.shader = LinearGradient(
-      colors: ramp.colors,
+      colors: sweepColors,
       stops: ramp.stops,
     ).createShader(wordRect);
     _gradientPaint.blendMode = BlendMode.modulate;
@@ -1824,6 +2047,12 @@ class WordRenderer {
   /// 字符统一叠加，保留 AMLL 的 float-word 与逐字 float 双层效果。
   ///
   /// [wordIndex] 该字在行内的索引（用于取逐字符缓存与行内起始 X）。
+  ///
+  /// 「渐变赋色」（[gradientFill] 为 true）时的颜色口径：
+  /// - 亮度锐带保持原观感；颜色按各采样点的行内位置取过曝曲线——
+  ///   后方白化 → 光前沿封面原色 → 前方回原有混色，曲线宽于锐带、
+  ///   跨字符连贯流动，不逐词跳变；
+  /// - 完全未播区：保持当前行原有混色，本功能不改它；辉光层同步同一口径。
   void _paintEmphasizedWord(
     Canvas canvas, {
     required double wordX,
@@ -1835,11 +2064,18 @@ class WordRenderer {
     required int textRed,
     required int textGreen,
     required int textBlue,
+    // 未经混色的封面提取色（仅过曝曲线使用；未注入时与 textRGB 同值）
+    required int accentR,
+    required int accentG,
+    required int accentB,
     required double bright,
     required double dark,
     required double transitionStart,
     required double transitionSpan,
     required bool useGradient,
+    required bool gradientFill,
+    // 光前沿行内坐标（null = 过曝曲线不可用，两端回原有混色）
+    required double? fillFront,
     bool sweepMode = false,
     double sweepFront = 0,
     double sweepFeather = 0,
@@ -1862,6 +2098,20 @@ class WordRenderer {
     // 用本词的行内起点换算（对齐 baseX / 换行行都会产生这个常量偏移）。
     final double sweepFrontCanvas = sweepFront + (wordX - wordStartX);
 
+    // 「渐变赋色」过曝取色（行内坐标；曲线不可用返回 null → 回落混色）
+    (int?, int?, int?) bloomAt(double xRow) {
+      if (!gradientFill || fillFront == null) {
+        return (null, null, null);
+      }
+      final double hB = fillHueBehindForTest(xRow, fillFront, fontSize * 1.6);
+      final double hA = fillHueAheadForTest(xRow, fillFront, fontSize * 1.2);
+      return (
+        fillBloomColorForTest(accentR, textRed, hB, hA),
+        fillBloomColorForTest(accentG, textGreen, hB, hA),
+        fillBloomColorForTest(accentB, textBlue, hB, hA),
+      );
+    }
+
     for (int k = 0; k < charPainters.length; k++) {
       final double cw = k < charWidths.length ? charWidths[k] : 0;
       final double charStartX = k < charStartXs.length ? charStartXs[k] : 0;
@@ -1876,6 +2126,12 @@ class WordRenderer {
       // saveLayer/shader 创建的 GPU 开销，避免真机掉帧导致缩放位移卡顿。
       final double charGlobalCenter = wordStartX + charStartX + cw / 2;
       final double charAlpha;
+      // 「渐变赋色」uniform tint：取字符中心曲线色（后方白化、前沿原色、
+      // 前方回原有混色）；曲线不可用时保持原有混色，不改未播颜色。
+      final (int? br, int? bg2, int? bb) = bloomAt(charGlobalCenter);
+      int tintR = br ?? textRed;
+      int tintG = bg2 ?? textGreen;
+      int tintB = bb ?? textBlue;
       if (!useGradient) {
         charAlpha = solidAlpha;
       } else if (sweepMode) {
@@ -1929,7 +2185,8 @@ class WordRenderer {
       final Rect charRect = Rect.fromLTWH(charX, charY, cw, charRectH);
       double leftAlpha = charAlpha;
       double rightAlpha = charAlpha;
-      // sweep：字符级用与整词路径同一套 4 停渐变（myune 逐像素斜坡的等价段）
+      // sweep：字符级用与整词路径同一套 4 停渐变（myune 逐像素斜坡的等价段）；
+      // 颜色不用其固定端点——按各 stop 的行内位置过曝取样（见合成处）。
       ({List<double> stops, List<Color> colors})? sweepRamp;
       if (useGradient && sweepMode) {
         sweepRamp = sweepRampFor(
@@ -1958,19 +2215,58 @@ class WordRenderer {
       }
       final bool needGradient =
           sweepRamp != null || (rightAlpha - leftAlpha).abs() >= 0.01;
+      // classic 2 停端点色（辉光层与文字层共用这一份）：取字符左右边缘的
+      // 过曝曲线色——后方白化、前沿原色、前方回原有混色；曲线不可用时
+      // （bloomAt 返回 null）回落原有混色，与整词路径同口径。
+      final (int? clr, int? clg, int? clb) = bloomAt(charLeftX);
+      final (int? dr, int? dg, int? db) = bloomAt(charRightX);
+      final List<Color> classicRampColors = <Color>[
+        Color.fromRGBO(
+          clr ?? textRed,
+          clg ?? textGreen,
+          clb ?? textBlue,
+          leftAlpha,
+        ),
+        Color.fromRGBO(
+          dr ?? textRed,
+          dg ?? textGreen,
+          db ?? textBlue,
+          rightAlpha,
+        ),
+      ];
+      // sweep 停点合成：颜色按各 stop 的行内位置过曝取样，alpha 取 ramp 原值
+      // （亮度锐带保持扫光观感；曲线不可用时逐像素等同 ramp 原始两端色）。
+      List<Color> sweepSynth() {
+        final ramp = sweepRamp!;
+        final List<Color> out = <Color>[];
+        for (int s = 0; s < ramp.stops.length; s++) {
+          final (int? sr, int? sg, int? sb) =
+              bloomAt(charLeftX + ramp.stops[s] * cw);
+          out.add(
+            Color.fromRGBO(
+              sr ?? textRed,
+              sg ?? textGreen,
+              sb ?? textBlue,
+              (((ramp.colors[s].toARGB32() >>> 24) & 0xFF) / 255.0),
+            ),
+          );
+        }
+        return out;
+      }
 
       // === 逐字符辉光层 ===
       // 强度 = glowLevel × 用户辉光强度倍数（glowLevel 已随字时长/末尾字加强）；
       // 光晕剖面固定（见 [_glowRimSigmaEm]），保证方块字的字怀不被糊满。
       if (st.glowLevel > 0) {
-        // 辉光颜色跟随当前文字色（= 动态取色混色结果），不再恒为白色。
+        // 辉光颜色跟随当前文字色（= 动态取色混色结果），不再恒为白色；
+        // 「渐变赋色」模式用该字符的均匀 tint（扫光带内过曝、未播保原混色）。
         final ({double base, double extra}) glowAlpha = _glowDrawAlpha(
           st.glowLevel,
         );
         final ColorFilter glowTint = _glowTint(
-          textRed,
-          textGreen,
-          textBlue,
+          tintR,
+          tintG,
+          tintB,
           glowAlpha.base,
         );
         final double pad = _glowSpritePad(fontSize);
@@ -2034,12 +2330,11 @@ class WordRenderer {
             dstRect: dstRect,
             rampRect: charRect,
             glowAlpha: glowAlpha,
-            sweepRamp: sweepRamp,
-            leftAlpha: leftAlpha,
-            rightAlpha: rightAlpha,
-            red: textRed,
-            green: textGreen,
-            blue: textBlue,
+            // 颜色与 stops 取文字层同一套（classic 端点 / sweep 停点合成，
+            // 均含「渐变赋色」过曝曲线口径）
+            stops: sweepRamp?.stops ?? const <double>[0.0, 1.0],
+            textRampColors:
+                sweepRamp == null ? classicRampColors : sweepSynth(),
           );
         } else {
           // 精灵未就绪（字符激活早期，glowLevel≈0 几乎不可见）：
@@ -2163,12 +2458,10 @@ class WordRenderer {
           painter.paint(canvas, charPos);
         }
         // sweep 用 4 停带（颜色顺序随 rtl 镜像）；classic 仍是左右边缘 alpha 的 2 停。
+        // 「渐变赋色」sweep 分支按各 stop 行内位置过曝合成（见 sweepSynth）；
+        // classic 用左右边缘曲线色。亮度锐带几何不变。
         final List<Color> gradientColors =
-            sweepRamp?.colors ??
-            <Color>[
-              Color.fromRGBO(textRed, textGreen, textBlue, leftAlpha),
-              Color.fromRGBO(textRed, textGreen, textBlue, rightAlpha),
-            ];
+            sweepRamp == null ? classicRampColors : sweepSynth();
         final List<double> gradientStops =
             sweepRamp?.stops ?? const <double>[0.0, 1.0];
         _gradientPaint.shader = LinearGradient(
@@ -2179,21 +2472,21 @@ class WordRenderer {
         canvas.drawRect(charRect, _gradientPaint);
         canvas.restore();
       } else if (charImg != null) {
-        // uniform（差异可忽略）：现有字形图路径
+        // uniform（差异可忽略）：现有字形图路径（「渐变赋色」用均匀 tint）
         _charImagePaint.colorFilter = ColorFilter.matrix(<double>[
-          textRed / 255,
+          tintR / 255,
           0,
           0,
           0,
           0,
           0,
-          textGreen / 255,
+          tintG / 255,
           0,
           0,
           0,
           0,
           0,
-          textBlue / 255,
+          tintB / 255,
           0,
           0,
           0,
@@ -2221,17 +2514,24 @@ class WordRenderer {
       } else {
         // uniform：TextPainter 均匀 alpha（量化缓存）
         final int alphaStep = (charAlpha * 20).round();
-        if (k >= lastSetAlphas.length || lastSetAlphas[k] != alphaStep) {
+        final int tintKey = (tintR << 16) | (tintG << 8) | tintB;
+        if (k >= lastSetAlphas.length ||
+            lastSetAlphas[k] != alphaStep ||
+            k >= _lastSetCharTints[wordIndex].length ||
+            _lastSetCharTints[wordIndex][k] != tintKey) {
           painter.text = TextSpan(
             text: painter.text?.toPlainText(),
             style: LyricLayout.paintStyle(
-              color: Color.fromRGBO(textRed, textGreen, textBlue, charAlpha),
+              color: Color.fromRGBO(tintR, tintG, tintB, charAlpha),
               fontSize: fontSize,
               height: rowHeight,
             ),
           );
           painter.layout();
           if (k < lastSetAlphas.length) lastSetAlphas[k] = alphaStep;
+          if (k < _lastSetCharTints[wordIndex].length) {
+            _lastSetCharTints[wordIndex][k] = tintKey;
+          }
         }
         painter.paint(canvas, charPos);
       }
@@ -2240,6 +2540,48 @@ class WordRenderer {
         canvas.restore();
       }
     }
+  }
+
+  /// 「渐变赋色」取色混白（ratio ∈ [0,1]）：100% = 原值，50% = 原值与白各半。
+  ///
+  /// 过曝曲线的"取色浓度"由 [LyricPreferences.gradientFillRatio] 控制——
+  /// 纯取色太鲜艳（用户 2026-11-20 反馈），默认落在范围正中（50%）。
+  @visibleForTesting
+  static int mixWithWhiteForTest(int channel, double ratio) =>
+      (channel * ratio + 255 * (1 - ratio)).round();
+
+  /// 「渐变赋色」后方白化度：x 越在光前沿后方越接近 1（远播纯白）。
+  /// 宽度 [w1] 独立于亮度锐带——过曝余韵跨多个字流动，避免逐词跳变。
+  @visibleForTesting
+  static double fillHueBehindForTest(double x, double front, double w1) =>
+      ((front - x) / w1).clamp(0.0, 1.0);
+
+  /// 「渐变赋色」前方回落度：x 越在光前方越接近 1（远未播回到原有混色）。
+  @visibleForTesting
+  static double fillHueAheadForTest(double x, double front, double w2) =>
+      ((x - front) / w2).clamp(0.0, 1.0);
+
+  /// 「渐变赋色」的过曝轨迹色（分段，只看位置不看词边界 → 跨字连贯）：
+  ///
+  /// - 光前沿处（两度皆 0）：封面提取原色——过曝光斑芯；
+  /// - 后方：白化度 hBehind 越大越接近纯白（已播区纯白）；
+  /// - 前方：回落度 hAhead 越大越接近原有混色 base（未播区保持原色，
+  ///   本功能不改它）。
+  ///
+  /// 由此整条颜色曲线 = 白 ←（余韵）→ 原色芯 ←（回落）→ 原混色，
+  /// 随光扫过时封色"过曝成白"，且全部区域平滑过渡、无逐词突变。
+  @visibleForTesting
+  static int fillBloomColorForTest(
+    int raw,
+    int base,
+    double hBehind,
+    double hAhead,
+  ) {
+    if (hBehind >= 1.0) return 255;
+    if (hBehind > 0) {
+      return (raw + (255 - raw) * hBehind.clamp(0.0, 1.0)).round();
+    }
+    return (raw + (base - raw) * hAhead.clamp(0.0, 1.0)).round();
   }
 
   /// 计算指定 X 坐标处的 alpha 值（行级渐变模型核心）。
@@ -2400,6 +2742,10 @@ class WordRenderer {
   ///   `saveLayer` 的边界，必须够大，否则光晕被裁出竖直硬边；
   /// - [rampRect] = **字符 rect**（与文字渐变同坐标系）→ 这是渐变 shader 的
   ///   锚点，用它才能让光晕前沿与文字前沿严格对齐。
+  ///
+  /// [textRampColors] 与 [stops] 直接取自文字层那套渐变（含「渐变赋色」
+  /// 双色端点：已播端纯白、未播端封面色），辉光仅把 alpha 再乘辉光强度——
+  /// 光晕自动双色并跟随前沿，无需在本方法内另行重建端点色。
   void _drawGlowSpriteWithRamp({
     required Canvas canvas,
     required ui.Image sprite,
@@ -2407,34 +2753,20 @@ class WordRenderer {
     required Rect dstRect,
     required Rect rampRect,
     required ({double base, double extra}) glowAlpha,
-    required ({List<double> stops, List<Color> colors})? sweepRamp,
-    required double leftAlpha,
-    required double rightAlpha,
-    required int red,
-    required int green,
-    required int blue,
+    required List<double> stops,
+    required List<Color> textRampColors,
   }) {
-    // 辉光用文字色，alpha 取「文字在该处 alpha × 辉光强度基准」。
-    // 渐变 stops 直接沿用文字那套（sweep 4 停 / classic 两端），
-    // 因此辉光前沿与文字前沿严格同位置。
-    final List<double> stops = sweepRamp?.stops ?? const <double>[0.0, 1.0];
-
-    Color rampColor(double textAlpha, double glowBase) => Color.fromRGBO(
-      red,
-      green,
-      blue,
-      (textAlpha * glowBase).clamp(0.0, 1.0),
+    // 辉光 RGB 沿用文字那套（文字色 / 双色端点），alpha = 文字 alpha × 强度基准
+    // （用 value 位运算取通道，规避 dart:ui Color 新 API 的废弃告警）
+    Color glowColor(Color c, double glowBase) => Color.fromRGBO(
+      (c.value >> 16) & 0xFF,
+      (c.value >> 8) & 0xFF,
+      c.value & 0xFF,
+      ((c.value >> 24) & 0xFF) / 255 * glowBase.clamp(0.0, 1.0),
     );
 
-    final List<Color> baseColors = sweepRamp == null
-        ? <Color>[
-            rampColor(leftAlpha, glowAlpha.base),
-            rampColor(rightAlpha, glowAlpha.base),
-          ]
-        : <Color>[
-            for (final Color c in sweepRamp.colors)
-              rampColor(c.a, glowAlpha.base),
-          ];
+    final List<Color> baseColors =
+        <Color>[for (final c in textRampColors) glowColor(c, glowAlpha.base)];
 
     // saveLayer 用 dstRect（包容光晕）。
     canvas.saveLayer(dstRect, Paint());
@@ -2454,15 +2786,8 @@ class WordRenderer {
 
     // 强度 >100%：同一渐变、加法叠加（单次 alpha 封顶 1.0）。
     if (glowAlpha.extra > 0) {
-      final List<Color> extraColors = sweepRamp == null
-          ? <Color>[
-              rampColor(leftAlpha, glowAlpha.extra),
-              rampColor(rightAlpha, glowAlpha.extra),
-            ]
-          : <Color>[
-              for (final Color c in sweepRamp.colors)
-                rampColor(c.a, glowAlpha.extra),
-            ];
+      final List<Color> extraColors =
+          <Color>[for (final c in textRampColors) glowColor(c, glowAlpha.extra)];
       canvas.saveLayer(dstRect, Paint());
       _glowPlusPaint.colorFilter = null;
       canvas.drawImageRect(sprite, srcRect, dstRect, _glowPlusPaint);
@@ -3103,6 +3428,7 @@ class WordRenderer {
     _wordAlphas = List<double>.filled(line.words.length, dark);
     _wordYOffsets = List<double>.filled(line.words.length, 0);
     _lastSetAlphas = List<int>.filled(line.words.length, -2);
+    _lastSetTints = List<int>.filled(line.words.length, -2);
     // v5 逐字符缓存：仅强调字有内容
     _charPainters = List.generate(
       line.words.length,
@@ -3111,6 +3437,7 @@ class WordRenderer {
     _charWidths = List.generate(line.words.length, (_) => const <double>[]);
     _charStartXs = List.generate(line.words.length, (_) => const <double>[]);
     _lastSetCharAlphas = List.generate(line.words.length, (_) => const <int>[]);
+    _lastSetCharTints = List.generate(line.words.length, (_) => const <int>[]);
     _emphasizeCharStates = List.generate(
       line.words.length,
       (_) => const <EmphasizeState>[],
@@ -3219,6 +3546,7 @@ class WordRenderer {
         _charWidths[i] = widths;
         _charStartXs[i] = starts;
         _lastSetCharAlphas[i] = List<int>.filled(n, -2);
+        _lastSetCharTints[i] = List<int>.filled(n, -2);
         _emphasizeCharStates[i] = List<EmphasizeState>.filled(
           n,
           EmphasizeState.idle,
@@ -3397,12 +3725,14 @@ class WordRenderer {
     _wordAlphas = const <double>[];
     _wordYOffsets = const <double>[];
     _lastSetAlphas = const <int>[];
+    _lastSetTints = const <int>[];
     // v5 逐字符缓存复位
     _emphasizeCharStates = const <List<EmphasizeState>>[];
     _charPainters = const <List<TextPainter>>[];
     _charWidths = const <List<double>>[];
     _charStartXs = const <List<double>>[];
     _lastSetCharAlphas = const <List<int>>[];
+    _lastSetCharTints = const <List<int>>[];
     // P1-5：reset 时失效辉光精灵缓存（dispose 图片 + 代数递增丢弃异步结果）
     _spriteEpoch++;
     for (final charList in _charGlowSprites) {

@@ -125,17 +125,17 @@ class Md3LyricPreferences extends ChangeNotifier {
   /// 自定义字体（[Md3LyricFontSource.custom]）是否加载成功。
   ///
   /// 面板提示「已应用自定义字体 / 字体加载失败」必须用它：
-  /// [effectiveFontFamily] 在 Windows 的 system 档也非 null（内置思源黑体），
+  /// [effectiveFontFamily] 在 Windows 的 system 档也非 null（内置 MD3MusicSans 字体），
   /// 用它判断会把「回落到默认字体」误报成「自定义字体已生效」。
   bool get customFontLoaded => _loadedCustomFontFamily != null;
 
   /// 当前生效的 fontFamily（传给 TextPainter 的 TextStyle）：
-  /// - [Md3LyricFontSource.system]：Windows 返回内置思源黑体（与全局 UI 同族，
+  /// - [Md3LyricFontSource.system]：Windows 返回内置 MD3MusicSans 字体（与全局 UI 同族，
   ///   否则「还原所有设置」后歌词会掉到引擎兜底字形）；其他平台返回 null，
   ///   让 Flutter 走系统字体链
   /// - [Md3LyricFontSource.bundled]：已废弃（内置 SimHei 已移除），等同 system
   /// - [Md3LyricFontSource.custom]：返回 [_loadedCustomFontFamily]，
-  ///   加载失败时降级为对应平台默认字体（Windows = 内置思源黑体）
+  ///   加载失败时降级为对应平台默认字体（Windows = 内置 MD3MusicSans 字体）
   String? get effectiveFontFamily {
     switch (_fontSource) {
       case Md3LyricFontSource.system:

@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/animation.dart' show Curves;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:md3music/modules/player/cover_flip_physics.dart';
 
@@ -198,6 +199,48 @@ void main() {
     test('透视系数可覆盖', () {
       final m = coverFlipMatrix(angle: 0.3, perspective: 0.0);
       expect(m.entry(3, 2), 0);
+    });
+  });
+
+  group('可变过冲（手势提交路径）', () {
+    test('overshoot=1 与 Curves.easeOutBack 逐点等价（既有默认行为不变）', () {
+      for (var i = 0; i <= 50; i++) {
+        final x = i / 50;
+        final t = kCoverFlipSwap + (1 - kCoverFlipSwap) * x;
+        expect(
+          coverFlipNewRotationProgress(t),
+          closeTo(Curves.easeOutBack.transform(x), 1e-12),
+        );
+      }
+    });
+
+    test('overshoot 越大，过冲峰值越高，端点仍为 0 / 1', () {
+      double peak(double o) {
+        var max = 0.0;
+        for (var i = 0; i <= 100; i++) {
+          final t = kCoverFlipSwap + (1 - kCoverFlipSwap) * i / 100;
+          max = math.max(max, coverFlipNewRotationProgress(t, overshoot: o));
+        }
+        return max;
+      }
+
+      expect(peak(0.65), lessThan(peak(1.0)));
+      expect(peak(1.0), lessThan(peak(1.35)));
+      // 档位必须连续：overshoot 从 1.0 微调到 1.001，同一点角度只能有极小
+      // 变化。若 1.0 档走贝塞尔、其它档走经典 back 解析式，这里会差出几个
+      // 百分点（两族曲线形状不同）——这条用例就是钉住「同一族曲线缩放」。
+      for (var i = 1; i < 20; i++) {
+        final t = kCoverFlipSwap + (1 - kCoverFlipSwap) * i / 20;
+        expect(
+          coverFlipNewRotationProgress(t, overshoot: 1.001),
+          closeTo(coverFlipNewRotationProgress(t), 5e-3),
+        );
+      }
+      expect(
+        coverFlipNewAngle(kCoverFlipSwap, overshoot: 1.35),
+        closeTo(-math.pi / 2, 1e-9),
+      );
+      expect(coverFlipNewAngle(1.0, overshoot: 1.35), closeTo(0, 1e-9));
     });
   });
 }

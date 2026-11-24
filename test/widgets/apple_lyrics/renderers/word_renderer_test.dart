@@ -9,6 +9,7 @@ import 'package:md3music/widgets/apple_lyrics/layout/lyric_preferences.dart';
 import 'package:md3music/widgets/apple_lyrics/models/lyric_line.dart';
 import 'package:md3music/widgets/apple_lyrics/renderers/emphasize_effect.dart';
 import 'package:md3music/widgets/apple_lyrics/renderers/word_renderer.dart';
+import 'package:md3music/widgets/apple_lyrics/utils/lyric_bg_bloom.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// WordRenderer 单元测试
@@ -927,6 +928,438 @@ void main() {
       expect(renderer.sweepFrontDebug, greaterThan(0));
       expect(probe.drawRects, isNotEmpty,
           reason: '逐字符 sweep 路径也应 drawRect 贴 4 停渐变');
+    });
+  });
+
+  // ==================== 「渐变赋色」过曝曲线（跨字连贯核心） ====================
+
+  group('「渐变赋色」过曝曲线', () {
+    // 曲线只看行内绝对位置（与词边界无关）→ 相邻字共享边界同值；
+    // 带宽独立且宽于亮度锐带，颜色跨多个字流动，不再逐词跳变。
+    // 用户 2026-11-20 反馈「每个词一下一下变色很丑」的数学锁。
+    test('fillHueBehind / Ahead：单调钳位、以光前沿为零点', () {
+      const double front = 100;
+      // 后方：越靠左（越已播）越接近 1；前沿处为 0；前方恒 0（钳位）
+      expect(WordRenderer.fillHueBehindForTest(60, front, 40), 1);
+      expect(WordRenderer.fillHueBehindForTest(100, front, 40), 0);
+      expect(WordRenderer.fillHueBehindForTest(160, front, 40), 0);
+      // 远超后方也钳位在 1
+      expect(
+        WordRenderer.fillHueBehindForTest(10, front, 40).clamp(0.0, 1.0),
+        1.0,
+      );
+      // 前方：越靠右（越未播）越接近 1；前沿处为 0；后方恒 0（钳位）
+      expect(WordRenderer.fillHueAheadForTest(130, front, 30), 1);
+      expect(WordRenderer.fillHueAheadForTest(100, front, 30), 0);
+      expect(WordRenderer.fillHueAheadForTest(40, front, 30), 0);
+      // 远前方钳位在 1
+      expect(
+        WordRenderer.fillHueAheadForTest(160, front, 30).clamp(0.0, 1.0),
+        1.0,
+      );
+    });
+
+    test('fillBloomColorForTest：前沿原色、后方白化、前方回混色', () {
+      const int raw = 51; // 封面原色分量
+      const int base = 224; // 原有混色分量
+      // 光前沿处（两度皆 0）：封面原色——过曝光斑芯
+      expect(
+        WordRenderer.fillBloomColorForTest(raw, base, 0, 0),
+        raw,
+      );
+      // 远后方：白化度 1 → 纯白
+      expect(
+        WordRenderer.fillBloomColorForTest(raw, base, 1, 0),
+        255,
+      );
+      // 远前方：回落度 1 → 原有混色（未播区不改色）
+      expect(
+        WordRenderer.fillBloomColorForTest(raw, base, 0, 1),
+        base,
+      );
+      // 中段线性插值（后方 t=0.5：raw 与白的中间）
+      expect(
+        WordRenderer.fillBloomColorForTest(raw, base, 0.5, 0),
+        closeTo(153, 1),
+      );
+      // 中段线性插值（前方 t=0.5：raw 与 base 的中间）
+      expect(
+        WordRenderer.fillBloomColorForTest(raw, base, 0, 0.5),
+        closeTo(138, 1),
+      );
+      // 越界钳位不冲出色域
+      expect(
+        WordRenderer.fillBloomColorForTest(raw, base, 9, 9),
+        isNot(equals(-1)),
+      );
+    });
+
+    test('mixWithWhiteForTest：取色浓度线性混白，端点即定义', () {
+      const int c = 51; // 原取色分量（深青 R）
+      // ratio = 1（100%）：原值不变
+      expect(WordRenderer.mixWithWhiteForTest(c, 1), c);
+      // ratio = 0.5（一半一半）：取色与白各半
+      expect(WordRenderer.mixWithWhiteForTest(c, 0.5), closeTo(153, 1));
+      // ratio = 0.75：75% 取色 + 25% 白（新默认 0.5 的对照样本）
+      expect(
+        WordRenderer.mixWithWhiteForTest(c, 0.75),
+        closeTo(102, 1),
+      );
+      // ratio = 0（理论下界）：纯白
+      expect(WordRenderer.mixWithWhiteForTest(c, 0), 255);
+      // 白通道本身混白恒为白
+      expect(WordRenderer.mixWithWhiteForTest(255, 0.5), 255);
+    });
+  });
+
+  // ==================== 「渐变赋色」像素证据 ====================
+
+  /// 渐变赋色像素证据：黑底渲染当前行（已推进到第 4 个字中段），
+  /// 返回左右字区的像素分类计数。
+  ///
+  /// 三套注入色在黑底上以全不透明笔画呈现，按通道特征互斥分类：
+  /// - 过曝白：rr>=235 && bb>=235 && bb-rr<=12；
+  /// - 封面原色（raw）：bb-rr>40（深青 0x33CCFF，bb-rr=204）；
+  /// - 原有混色（mix）：其余蓝占优像素（浅青 0xE0FFFF，bb-rr=31 且 r<235）。
+  ///
+  /// 分类互斥才能分别锁死各区域用色：已播区=白、扫光带内=raw→白过渡、
+  /// 未播区=mixed（若未播区被误改成封面原色，右区会出现 raw 像素）。
+  /// unplayedOpacity 置满是为了让未播端 alpha 在黑底上保住色相读数。
+  ///
+  /// 采样区避开过渡带：8 字 × 24px 铺成 192px 行宽，推进到第 4 字中段时
+  /// 扫光带夹在 [60,108]，左区取前两个字（x<44，全已播）、
+  /// 右区取 x>=112 的未播字，两区都不含过渡带内像素。
+  Future<({
+    int leftWhite,
+    int leftRaw,
+    int leftMix,
+    int rightWhite,
+    int rightRaw,
+    int rightMix,
+  })> renderGradientEvidence(WordRenderer r, LyricLine l) async {
+    const int w = 220;
+    const int leftMaxX = 44;
+    const int rightMinX = 112;
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(recorder);
+    canvas.drawRect(
+      ui.Rect.fromLTWH(0, 0, w.toDouble(), 80),
+      ui.Paint()..color = const ui.Color(0xFF000000),
+    );
+    r.paintLine(canvas, ui.Offset.zero, l, 24);
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(w, 80);
+    final data = await image.toByteData();
+    image.dispose();
+    if (data == null) {
+      return (
+        leftWhite: 0,
+        leftRaw: 0,
+        leftMix: 0,
+        rightWhite: 0,
+        rightRaw: 0,
+        rightMix: 0
+      );
+    }
+    int lw = 0, lr = 0, lm = 0, rw = 0, rwr = 0, rm = 0;
+    for (int y = 0; y < 80; y++) {
+      for (int x = 0; x < w; x++) {
+        final o = (y * w + x) * 4;
+        final rr = data.getUint8(o);
+        final gg = data.getUint8(o + 1);
+        final bb = data.getUint8(o + 2);
+        final bool white = rr >= 235 && bb >= 235 && bb - rr <= 12;
+        final bool rawCyan = bb - rr > 40 && bb > 90 && gg > rr;
+        final bool mixCyan = !white && !rawCyan && bb > 90 && gg > rr;
+        if (x < leftMaxX) {
+          if (white) lw++;
+          if (rawCyan) lr++;
+          if (mixCyan) lm++;
+        } else if (x >= rightMinX) {
+          if (white) rw++;
+          if (rawCyan) rwr++;
+          if (mixCyan) rm++;
+        }
+      }
+    }
+    return (
+      leftWhite: lw,
+      leftRaw: lr,
+      leftMix: lm,
+      rightWhite: rw,
+      rightRaw: rwr,
+      rightMix: rm
+    );
+  }
+
+  group('「渐变赋色」字内渐变双色端点', () {
+    /// 封面提取的原色（未经混色）：深青。「渐变赋色」只把它用在
+    /// **扫光带内**的过曝过渡上。
+    const int kAccentRaw = 0xFF33CCFF;
+
+    /// 当前行原有的混色结果：浅青（白 × 0.85 + 封色 × 0.15 的观感）。
+    /// 未播区必须保持这个颜色不变——本功能不改未播部分的颜色。
+    const int kAccentMixed = 0xFFE0FFFF;
+
+    /// 8 字逐字行（每字 24px，总宽 192px，为左右采样区留出安全间距）。
+    const LyricLine longLine = LyricLine(
+      startTime: 0,
+      duration: 8000,
+      text: '运命的华丽人生啊',
+      words: [
+        LyricWord(startTime: 0, duration: 1000, text: '运'),
+        LyricWord(startTime: 1000, duration: 1000, text: '命'),
+        LyricWord(startTime: 2000, duration: 1000, text: '的'),
+        LyricWord(startTime: 3000, duration: 1000, text: '华'),
+        LyricWord(startTime: 4000, duration: 1000, text: '丽'),
+        LyricWord(startTime: 5000, duration: 1000, text: '人'),
+        LyricWord(startTime: 6000, duration: 1000, text: '生'),
+        LyricWord(startTime: 7000, duration: 1000, text: '啊'),
+      ],
+    );
+
+    setUp(() async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      // 未播端 alpha 置满：黑底上要保住色相读数（否则太暗判不出来）
+      await LyricPreferences.instance.setUnplayedOpacity(1.0);
+      addTearDown(() => LyricPreferences.instance.reset());
+    });
+
+    test('sweep 扫光模式：已播侧过曝成白、未播侧保持原有混色', () async {
+      await LyricPreferences.instance.setFillStyle(
+        LyricFillStyle.wordGradient,
+      );
+
+      renderer.setLineState(
+        isActive: true,
+        scale: LyricLayout.activeScale,
+        activeColorValue: kAccentMixed,
+        gradientAccentValue: kAccentRaw,
+      );
+      renderer.paintLine(makeCanvas(), ui.Offset.zero, longLine, 24);
+      // 推进到第 4 个字中段：前两字全亮、后段全暗，扫光带夹在中间
+      for (int i = 0; i < 60; i++) {
+        renderer.tick(0.016, 3500);
+      }
+
+      final e = await renderGradientEvidence(renderer, longLine);
+      expect(e.leftWhite, greaterThan(0),
+          reason: '已播字应为过曝光学白（左区出现白色像素）');
+      expect(e.leftRaw, 0, reason: '已播侧不得残留封面原色');
+      expect(e.leftMix, 0, reason: '已播侧不得残留原有混色');
+      expect(e.rightMix, greaterThan(0),
+          reason: '未播区应保持原有混色（浅青）');
+      expect(e.rightRaw, 0,
+          reason: '未播区不得被改成封面原色——本功能不改未播部分的颜色');
+      expect(e.rightWhite, 0, reason: '未播区不应被提前过曝成白');
+    });
+
+    test('classic 经典模式：同口径且端点按位置取', () async {
+      await LyricPreferences.instance.setFillStyle(
+        LyricFillStyle.wordGradient,
+      );
+      await LyricPreferences.instance.setFillMode(LyricFillMode.classic);
+
+      renderer.setLineState(
+        isActive: true,
+        scale: LyricLayout.activeScale,
+        activeColorValue: kAccentMixed,
+        gradientAccentValue: kAccentRaw,
+      );
+      renderer.paintLine(makeCanvas(), ui.Offset.zero, longLine, 24);
+      for (int i = 0; i < 60; i++) {
+        renderer.tick(0.016, 3500);
+      }
+
+      final e = await renderGradientEvidence(renderer, longLine);
+      expect(e.leftWhite, greaterThan(0));
+      expect(e.leftRaw, 0);
+      expect(e.leftMix, 0);
+      expect(e.rightMix, greaterThan(0),
+          reason: '未播区应保持原有混色');
+      expect(e.rightRaw, 0,
+          reason: '未播区不得被改成封面原色');
+      expect(e.rightWhite, 0);
+    });
+
+    // ==================== 「背景增透」（backgroundBloom） ====================
+
+    test('背景增透：注入取样处理后色走同一过曝曲线（像素证据）', () async {
+      await LyricPreferences.instance.setFillStyle(
+        LyricFillStyle.backgroundBloom,
+      );
+      // 取样背景色的提亮加饱和结果（对封面原色跑同一处理函数，
+      // 保证与真机取样口径一致）：仍属深青签名，扫光带内按 raw 分类。
+      final int accentBgBloom =
+          processBgBloomColor(kAccentRaw & 0x00FFFFFF) | 0xFF000000;
+
+      renderer.setLineState(
+        isActive: true,
+        scale: LyricLayout.activeScale,
+        activeColorValue: kAccentMixed,
+        gradientAccentValue: accentBgBloom,
+      );
+      renderer.paintLine(makeCanvas(), ui.Offset.zero, longLine, 24);
+      for (int i = 0; i < 60; i++) {
+        renderer.tick(0.016, 3500);
+      }
+
+      final e = await renderGradientEvidence(renderer, longLine);
+      expect(e.leftWhite, greaterThan(0),
+          reason: '已播侧应过曝成白（取样色经同一白化曲线）');
+      expect(e.leftMix, 0, reason: '已播侧不得残留原有混色');
+      expect(e.rightMix, greaterThan(0),
+          reason: '未播区应保持原有混色，不被背景增透改动');
+      expect(e.rightRaw, 0,
+          reason: '未播区不得被铺上取样色');
+      expect(e.rightWhite, 0, reason: '未播区不应被提前过曝成白');
+    });
+
+    test('背景增透：取样刷新（注入值变化）必须触发 tint 失效重建', () async {
+      await LyricPreferences.instance.setFillStyle(
+        LyricFillStyle.backgroundBloom,
+      );
+
+      renderer.setLineState(
+        isActive: true,
+        scale: LyricLayout.activeScale,
+        activeColorValue: kAccentMixed,
+        gradientAccentValue: kAccentRaw,
+      );
+      renderer.paintLine(makeCanvas(), ui.Offset.zero, longLine, 24);
+      for (int i = 0; i < 60; i++) {
+        renderer.tick(0.016, 3500);
+      }
+      renderer.debugTintInvalidationsForTest = 0;
+
+      // 下一次抓取的取样背景不同 → 注入值变化（lyric_bg_bloom 输出刷新，
+      // ≤2/s）。同步早退不允许：新键写入失败会让字内渐变停留在旧取样色。
+      renderer.setLineState(
+        isActive: true,
+        scale: LyricLayout.activeScale,
+        activeColorValue: kAccentMixed,
+        gradientAccentValue: 0xFF66FF99,
+      );
+      renderer.paintLine(makeCanvas(), ui.Offset.zero, longLine, 24);
+      expect(
+        renderer.debugTintInvalidationsForTest,
+        greaterThanOrEqualTo(1),
+        reason: 'accent 注入值变化必须失效 tint 缓存并重建，'
+          '否则背景增透取样刷新后字内渐变停留在旧取样色',
+      );
+      // 同值注入不得触发重复失效（逐帧稳态零额外重建开销）
+      renderer.paintLine(makeCanvas(), ui.Offset.zero, longLine, 24);
+      expect(
+        renderer.debugTintInvalidationsForTest,
+        1,
+        reason: '注入值未变化时不应重复失效（省电语义同 textColor 早退）',
+      );
+
+      // 注入值清空（模式关闭回落整行赋色）同样算一次有效变化
+      renderer.setLineState(
+        isActive: true,
+        scale: LyricLayout.activeScale,
+        activeColorValue: kAccentMixed,
+        gradientAccentValue: null,
+      );
+      renderer.paintLine(makeCanvas(), ui.Offset.zero, longLine, 24);
+      expect(renderer.debugTintInvalidationsForTest, 2);
+    });
+
+    test('classic 连贯性：已播字符内部无色残留、未播区保混色', () async {
+      // 端点按位置取后：已播完的字两端同色为白；完全未播（t>=1）的端点取
+      // 原有混色。若退回「每字固定左白右封」，已播字符内部残留封面原色；
+      // 若未播区被铺成封面原色，未播列会出现 raw 像素——两者都被钉死。
+      await LyricPreferences.instance.setFillStyle(
+        LyricFillStyle.wordGradient,
+      );
+      await LyricPreferences.instance.setFillMode(LyricFillMode.classic);
+
+      renderer.setLineState(
+        isActive: true,
+        scale: LyricLayout.activeScale,
+        activeColorValue: kAccentMixed,
+        gradientAccentValue: kAccentRaw,
+      );
+      renderer.paintLine(makeCanvas(), ui.Offset.zero, longLine, 24);
+      // 前沿夹在行中段：第 1~2 字（x<48）完全已播、不在过渡带内
+      for (int i = 0; i < 60; i++) {
+        renderer.tick(0.016, 3500);
+      }
+
+      // 按 4px 列统计「封面原色签名」与「原有混色签名」像素数
+      const int colW = 4;
+      final recorder = ui.PictureRecorder();
+      final canvas = ui.Canvas(recorder);
+      canvas.drawRect(
+        ui.Rect.fromLTWH(0, 0, 220.toDouble(), 80),
+        ui.Paint()..color = const ui.Color(0xFF000000),
+      );
+      renderer.paintLine(canvas, ui.Offset.zero, longLine, 24);
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(220, 80);
+      final data = await image.toByteData();
+      image.dispose();
+      expect(data, isNotNull);
+      final List<int> rawCols = <int>[];
+      final List<int> mixCols = <int>[];
+      for (int c = 0; c < 220 ~/ colW; c++) {
+        int rawCnt = 0;
+        int mixCnt = 0;
+        for (int y = 0; y < 80; y++) {
+          for (int x = c * colW; x < (c + 1) * colW; x++) {
+            final o = (y * 220 + x) * 4;
+            final rr = data!.getUint8(o);
+            final gg = data.getUint8(o + 1);
+            final bb = data.getUint8(o + 2);
+            final bool white = rr >= 235 && bb >= 235 && bb - rr <= 12;
+            final bool rawCyan = bb - rr > 40 && bb > 90 && gg > rr;
+            final bool mixCyan = !white && !rawCyan && bb > 90 && gg > rr;
+            if (rawCyan) rawCnt++;
+            if (mixCyan) mixCnt++;
+          }
+        }
+        rawCols.add(rawCnt);
+        mixCols.add(mixCnt);
+      }
+      // 第 1~2 字所在列（前 12 列，x<48）：必须零原色残留
+      expect(
+        rawCols.take(12),
+        everyElement(0),
+        reason: '已播字符内部不得残留封面原色（每字固定左白右封会留下字内渐变）',
+      );
+      // 未播区（右段，x≥120：第 6~8 字所在列）：保混色、零原色
+      expect(
+        mixCols.skip(30),
+        anyElement(greaterThan(0)),
+        reason: '未播区应保留原有混色',
+      );
+      expect(
+        rawCols.sublist(30, 48),
+        everyElement(0),
+        reason: '未播区不得被铺成封面原色',
+      );
+    });
+
+    test('关闭开关（整行赋色）：两端同色，无过曝白', () async {
+      // fillStyle 保持默认 lineUniform，其余设置同上 —— 退化回退证明
+      renderer.setLineState(
+        isActive: true,
+        scale: LyricLayout.activeScale,
+        activeColorValue: kAccentMixed,
+      );
+      renderer.paintLine(makeCanvas(), ui.Offset.zero, longLine, 24);
+      for (int i = 0; i < 60; i++) {
+        renderer.tick(0.016, 3500);
+      }
+
+      final e = await renderGradientEvidence(renderer, longLine);
+      expect(e.rightMix, greaterThan(0),
+          reason: '未播侧仍是原有混色（整行统一混色）');
+      expect(e.rightRaw, 0);
+      expect(e.leftWhite, 0,
+          reason: '整行赋色没有双色过渡，已播侧不应出现过曝白');
+      expect(e.leftRaw, 0);
     });
   });
 

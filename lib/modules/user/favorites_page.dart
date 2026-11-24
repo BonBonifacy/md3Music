@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/build_flags.dart';
 import '../../core/layout/adaptive_content_grid.dart';
 import '../../core/layout/adaptive_navigator.dart';
+import '../../core/layout/page_layout.dart';
 import '../../core/layout/page_title_alignment.dart';
 import '../../core/remote/tv_reorder.dart';
 import '../../core/theme/app_dimens.dart';
@@ -1070,14 +1071,20 @@ class _FavoritesPageState extends State<FavoritesPage>
               },
             ),
             Expanded(
-              child: TabBarView(
-                controller: _tabController,
-                physics: const TabSnapPhysics(),
-                children: [
-                  _buildPlaylistsTab(),
-                  _buildAlbumsTab(),
-                  _buildArtistsTab(),
-                ],
+              // 大屏限宽：桌面/平板把 1936px 的窗口铺满会让单行拉到 1700px，
+              // 行尾图标被甩到最右、视线横跨整屏（用户反馈「不够高级」的
+              // 主要来源之一）。与其它页面同走 ContentWidth（92% 居中，
+              // 手机端无变化），只做限宽、不改任何行结构或交互。
+              child: ContentWidth(
+                child: TabBarView(
+                  controller: _tabController,
+                  physics: const TabSnapPhysics(),
+                  children: [
+                    _buildPlaylistsTab(),
+                    _buildAlbumsTab(),
+                    _buildArtistsTab(),
+                  ],
+                ),
               ),
             ),
           ],
@@ -1328,36 +1335,41 @@ class _FavoritesPageState extends State<FavoritesPage>
               radius: AppRadius.smAll,
               child: cover,
             ),
-            // 右下角一键播放小三角：提示「点击封面即可从头播放」。
-            // 无底色，仅保留白色三角；叠一层轻微阴影保证在浅色封面上可辨识。
-            // 加载中（进度环覆盖）或管理/排序模式（封面点击被劫持）时隐藏。
+            // 右下角一键播放角标：提示「点击封面即可从头播放」。
+            // 原实现是无底白三角 + 黑投影（硬编码黑白，项目明令禁止）。
+            // 改为主题主色实心圆徽：既有对比底色保证任意封面上可辨识，
+            // 又天然跟随动态取色。徽章不吃命中：包 IgnorePointer，点击仍落到封面。
             if (!loading && !_isManaging && !reordering)
-              const Positioned(
-                right: 2,
-                bottom: 2,
-                child: Icon(
-                  Icons.play_arrow_rounded,
-                  size: 20,
-                  color: Colors.white,
-                  shadows: [
-                    Shadow(
-                      color: Colors.black54,
-                      blurRadius: 3,
-                      offset: Offset(0, 1),
+              Positioned(
+                right: AppSpacing.xxs,
+                bottom: AppSpacing.xxs,
+                child: IgnorePointer(
+                  child: Container(
+                    width: 20,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      color: cs.primary.withValues(alpha: 0.92),
+                      shape: BoxShape.circle,
                     ),
-                  ],
+                    child: Icon(
+                      Icons.play_arrow_rounded,
+                      size: 14,
+                      color: cs.onPrimary,
+                    ),
+                  ),
                 ),
               ),
             if (loading)
               Container(
-                color: Colors.black.withValues(alpha: 0.45),
+                // scrim 是 M3 语义遮罩色，替代硬编码黑色
+                color: cs.scrim.withValues(alpha: 0.45),
                 alignment: Alignment.center,
-                child: const SizedBox(
-                  width: 22,
-                  height: 22,
+                child: SizedBox(
+                  width: AppCapsule.cellIcon,
+                  height: AppCapsule.cellIcon,
                   child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
+                    strokeWidth: AppSpacing.xxs,
+                    color: cs.onPrimary,
                   ),
                 ),
               ),
@@ -1538,11 +1550,11 @@ class _FavoritesPageState extends State<FavoritesPage>
           top: AppSpacing.sm,
           bottom: AppSpacing.sm + MediaQuery.paddingOf(context).bottom,
         ),
-        targetExtent: 380,
+        targetExtent: 300,
         childAspectRatio: 3.5,
         spacing: AppSpacing.sm,
         minColumns: 2,
-        maxColumns: 3,
+        maxColumns: 6,
         itemCount: _albums.length,
         itemBuilder: (context, index) {
           final album = _albums[index];
@@ -1653,6 +1665,9 @@ class _FavoritesPageState extends State<FavoritesPage>
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                // mainAxisSize.min：Column 默认吃掉格子全部高度（85），文字被顶到上沿、
+                // 与垂直居中的 52 封面错位；收缩到内容高度后才真正同心居中。
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
                     album.name,
@@ -1723,11 +1738,11 @@ class _FavoritesPageState extends State<FavoritesPage>
           top: AppSpacing.sm,
           bottom: AppSpacing.sm + MediaQuery.paddingOf(context).bottom,
         ),
-        targetExtent: 380,
+        targetExtent: 300,
         childAspectRatio: 3.5,
         spacing: AppSpacing.sm,
         minColumns: 2,
-        maxColumns: 3,
+        maxColumns: 6,
         itemCount: _artists.length,
         itemBuilder: (context, index) {
           final artist = _artists[index];
@@ -1798,6 +1813,7 @@ class _FavoritesPageState extends State<FavoritesPage>
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
                     name.toString(),
@@ -2008,9 +2024,13 @@ class _GroupSectionState extends State<_GroupSection>
               child: InkWell(
                 onTap: widget.onToggle,
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.lg,
-                    vertical: AppSpacing.md,
+                  // 分组标题属于「组与组」的分界：上间距放宽（xl）成节奏，
+                  // 下间距收紧（xs）让它贴近自己那一组，分组关系才立得住。
+                  padding: const EdgeInsets.only(
+                    left: AppSpacing.lg,
+                    right: AppSpacing.lg,
+                    top: AppSpacing.xl,
+                    bottom: AppSpacing.xs,
                   ),
                   child: Row(
                     children: [
@@ -2025,20 +2045,33 @@ class _GroupSectionState extends State<_GroupSection>
                         ),
                       ),
                       const Gap(AppSpacing.xs),
-                      // 分组标题：比 TabBar 的「歌单/专辑/歌手」再小一档
+                      // 分组标题：原为 labelSmall(11) 比行标题(14) 还小，层级倒挂
+                      // （页面上最不重要的字反而是分区标题）。升到 labelLarge(14/w600)，
+                      // 用字重与行标题区分，字号不再倒挂。
                       Text(
                         widget.title,
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                          letterSpacing: 0.4,
+                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w600,
                           color: colorScheme.onSurface,
                         ),
                       ),
                       const Gap(AppSpacing.sm),
-                      Text(
-                        '${widget.playlists.length}',
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: colorScheme.onSurfaceVariant,
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.sm,
+                          vertical: AppSpacing.xxs,
+                        ),
+                        decoration: ShapeDecoration(
+                          color: colorScheme.surfaceContainerHighest,
+                          shape: const StadiumBorder(),
+                        ),
+                        child: Text(
+                          '${widget.playlists.length}',
+                          style:
+                              Theme.of(context).textTheme.labelSmall?.copyWith(
+                                    color: colorScheme.onSurfaceVariant,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                         ),
                       ),
                     ],
@@ -2048,7 +2081,8 @@ class _GroupSectionState extends State<_GroupSection>
             ),
             if (widget.trailing != null)
               Padding(
-                padding: const EdgeInsets.only(right: AppSpacing.sm),
+                // 与行尾内容同一条右基线（行内右内衬是 lg）
+                padding: const EdgeInsets.only(right: AppSpacing.lg),
                 child: widget.trailing,
               ),
           ],

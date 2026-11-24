@@ -2008,6 +2008,31 @@ class KugouProvider extends ChangeNotifier {
   /// 已保存的账号列表（供「账号管理」UI 展示）。
   List<KugouAccount> get savedAccounts => _apiClient.savedAccounts;
 
+  /// 当前登录账号的展示信息（供登录态过期提示复用账号列表数据）。
+  KugouAccount? get currentAccount {
+    final uid = userid;
+    if (uid == null) return null;
+    for (final account in savedAccounts) {
+      if (account.userid == uid) return account;
+    }
+    return null;
+  }
+
+  /// 后台定时检查当前账号登录态：
+  /// 仅在「确定已过期」时标记账号并通知 UI；无网络/未知一律返回 false，不误弹。
+  /// 返回 true=确定已过期（此时可调用方弹窗）；false=有效或未知。
+  Future<bool> checkCurrentTokenExpired() async {
+    if (!_isLoggedIn || _apiClient.userid == null) return false;
+    final expired = await _apiClient.checkTokenExpired();
+    if (expired != true) return false;
+
+    final uid = _apiClient.userid!;
+    await _apiClient.markAccountExpired(uid);
+    debugPrint('⚠️ [Account] 后台检查发现账号 $uid 登录已过期');
+    notifyListeners();
+    return true;
+  }
+
   /// 切换到指定账号：切换内存凭证 + 检查登录态是否过期 + 重载该账号的用户信息与签到日历。
   /// 返回切换结果（[SwitchAccountResult.tokenExpired] 表示凭证已切换但登录已过期）。
   Future<SwitchAccountResult> switchAccount(String userid) async {

@@ -122,3 +122,5 @@ flutter:
   shaders:
     - shaders/depth_parallax.frag
     - shaders/flowing_background.frag
+    - shaders/distortion_wave_lens.frag
+    - shaders/distortion_wave_band.frag

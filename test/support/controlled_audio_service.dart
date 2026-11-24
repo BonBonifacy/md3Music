@@ -6,6 +6,7 @@ import 'package:just_audio/just_audio.dart' as just_audio;
 class ControlledAudioService {
   final _player = _ControlledAudioPlayer();
   final _positionState = StreamController<Duration>.broadcast();
+  final _durationState = StreamController<Duration?>.broadcast();
   final _playerState = StreamController<just_audio.PlayerState>.broadcast();
   final _playingState = StreamController<bool>.broadcast();
   final _speedState = StreamController<double>.broadcast();
@@ -29,7 +30,7 @@ class ControlledAudioService {
   bool get hasPlayerStateListener => _playerState.hasListener;
 
   Stream<Duration> get positionStream => _positionState.stream;
-  Stream<Duration?> get durationStream => const Stream.empty();
+  Stream<Duration?> get durationStream => _durationState.stream;
   Stream<bool> get playingStream => _playingState.stream;
   Stream<just_audio.PlayerState> get playerStateStream => _playerState.stream;
   Stream<just_audio.SequenceState?> get sequenceStateStream =>
@@ -137,6 +138,10 @@ class ControlledAudioService {
 
   void emitPosition(Duration position) => _positionState.add(position);
 
+  /// 时长上报（durationStream）：位置兜底判定 `_position >= _duration`
+  /// 需要替身给出非零时长，真实 ExoPlayer 在时长就绪后会推一次。
+  void emitDuration(Duration duration) => _durationState.add(duration);
+
   void setDiagnosticSnapshot({
     required Duration position,
     required Duration bufferedPosition,
@@ -180,6 +185,7 @@ class ControlledAudioService {
 
   Future<void> dispose() async {
     await _positionState.close();
+    await _durationState.close();
     await _playingState.close();
     await _speedState.close();
     await _crossfadingState.close();

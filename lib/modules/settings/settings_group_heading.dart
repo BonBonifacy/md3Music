@@ -17,32 +17,41 @@ class SettingsGroupHeading extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = theme.colorScheme;
-    return Padding(
-      padding: EdgeInsets.fromLTRB(
-        AppSpacing.lg,
-        first ? AppSpacing.lg : AppSpacing.xl,
-        AppSpacing.lg,
-        AppSpacing.sm,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (!first) ...[
-            Divider(height: 1, color: colors.outlineVariant),
-            const Gap(AppSpacing.lg),
-          ],
-          Semantics(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 分隔线画成 **full-bleed**：原实现把它放在 16dp 水平内衬里面，
+        // 读起来像「一行短横线」而不是分组线——分组语义靠线条贯穿整宽表达。
+        if (!first)
+          Divider(
+            height: 1,
+            thickness: 1,
+            color: colors.outlineVariant.withValues(alpha: 0.5),
+          ),
+        Padding(
+          padding: EdgeInsets.fromLTRB(
+            AppSpacing.lg,
+            first ? AppSpacing.lg : AppSpacing.xl,
+            AppSpacing.lg,
+            AppSpacing.sm,
+          ),
+          child: Semantics(
             header: true,
             child: Text(
               title,
-              style: theme.textTheme.titleMedium?.copyWith(
+              // 原来是 titleMedium(16/w600)，与下面行标题 bodyLarge(16/w600)
+              // 字号字重完全相同、只差颜色——层级几乎为零。分组标题降到
+              // labelLarge(14/w600) 并用 primary 色，靠「更小但更醒目」区分，
+              // 行标题才立得住。
+              style: theme.textTheme.labelLarge?.copyWith(
                 color: colors.primary,
                 fontWeight: FontWeight.w600,
+                letterSpacing: 0.5,
               ),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

@@ -2,7 +2,6 @@
 
 #include <windows.h>
 
-#include <cstdio>
 
 #include "resource.h"
 
@@ -211,7 +210,9 @@ void TaskbarControls::UpdatePlayPauseButton() {
 
 void TaskbarControls::SetState(int64_t position_ms, int64_t duration_ms,
                                bool is_playing, bool visible) {
-  if (!initialized_ || list_ == nullptr || hwnd_ == nullptr) return;
+  if (!initialized_ || list_ == nullptr || hwnd_ == nullptr) {
+    return;
+  }
 
   // 播放态翻转只换那一枚图标（整排重加会让按钮闪一下）。
   if (is_playing != is_playing_) {

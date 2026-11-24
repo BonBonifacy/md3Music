@@ -35,6 +35,21 @@ enum LyricDisplayMode { translation, roma }
 /// 与 [LyricFontSource] / [LyricDisplayMode] 一样，持久化时存 `name`，未知值回退默认。
 enum LyricFillMode { classic, sweep }
 
+/// 歌词动态颜色的「赋色方式」（二选一，仅 AM 播放器 + 开启「歌词动态颜色」时生效）。
+///
+/// - [LyricFillStyle.lineUniform]：整行赋色（默认，历史行为）——当前行统一使用
+///   「白 × 混色比例 + 封面提取色」混色，字内渐变只改透明度。
+/// - [LyricFillStyle.wordGradient]：渐变赋色——当前行字内渐变的**未播端**
+///   用未经混色的封面取色、**已播端**过渡到纯白，唱到之处封面色"过曝"
+///   成白色，产生光学感。
+/// - [LyricFillStyle.backgroundBloom]：背景增透——条带取色源改为**当前行背后
+///   的实拍背景色**（模糊封面 / 流光背景 + 蒙版层），经提亮加饱和后供过曝
+///   曲线使用，光学观感为"背后背景色过曝偏向白色"；需向视图注入采样 key
+///   （见 AppleLyricsView.backgroundSamplerKey），未注入时退回封面提取色。
+///
+/// 与 [LyricFillMode] 一样，持久化时存 `name`，未知值回退默认。
+enum LyricFillStyle { lineUniform, wordGradient, backgroundBloom }
+
 /// 辉光触发判定模式：自适应 or 固定时长。
 ///
 /// - [GlowThresholdMode.adaptive]：原有判定——按歌曲 BPM / KRC 歌词字长中位数
@@ -64,6 +79,13 @@ String lyricPositionLabel(LyricPosition position) => switch (position) {
       LyricPosition.left => '置左',
       LyricPosition.center => '居中',
       LyricPosition.right => '置右',
+    };
+
+/// 赋色方式的中文标签（设置页二选一下拉条目）。
+String lyricFillStyleLabel(LyricFillStyle style) => switch (style) {
+      LyricFillStyle.lineUniform => '整行赋色',
+      LyricFillStyle.wordGradient => '渐变赋色',
+      LyricFillStyle.backgroundBloom => '背景增透',
     };
 
 /// 歌词显示偏好设置（字号 + 行间距 + 字体）。
@@ -678,6 +700,8 @@ class LyricPreferences extends ChangeNotifier {
   static const String _keyStaggerFromCurrentLine =
       'lyric_stagger_from_current';
   static const String _keyFillMode = 'lyric_fill_mode';
+  static const String _keyFillStyle = 'lyric_fill_style';
+  static const String _keyGradientFillRatio = 'lyric_gradient_fill_ratio';
   static const String _keyHideLyricCredits = 'lyric_hide_credits';
   static const String _keyCreditPattern = 'lyric_credit_pattern';
   static const String _keyInterludeDotsStartX = 'lyric_interlude_dots_start_x';
@@ -751,6 +775,24 @@ class LyricPreferences extends ChangeNotifier {
   bool _staggerFromCurrentLine = defaultStaggerFromCurrentLine;
   // 字内渐变模型：默认 sweep（myune 扫光移植），classic 为本仓原有观感
   LyricFillMode _fillMode = LyricFillMode.sweep;
+  /// 「渐变赋色」过曝轨迹使用的取色混白比例（0~1）。
+  ///
+  /// 过曝曲线只出现在扫光过程中；此比例决定曲线里"取色"的浓度：
+  /// 100% = 完全原取色，50% = 取色与白各半，0% = 不取色（纯白光核）。
+  /// 默认 0.5（范围正中）：纯取色太鲜艳（用户 2026-11-20 反馈），
+  /// 先压到 75%，随后放开 0~100 并把默认落回中轴。仅「歌词动态颜色」
+  /// + 渐变赋色（wordGradient / backgroundBloom）时才由设置页展示滑块。
+  static const double minGradientFillRatio = 0.0;
+  static const double maxGradientFillRatio = 1.0;
+  static const double defaultGradientFillRatio = 0.5;
+
+  // 动态颜色赋色方式：默认 lineUniform（整行赋色，历史行为）；wordGradient =
+  // 字内渐变直接用封面原色（不混色）过渡到白（过曝感）；backgroundBloom =
+  // 背景增透：条带取当前行背后实拍背景色（提亮加饱和后供过曝曲线）。
+  // 仅 AM 播放页 + 「歌词动态颜色」开启时生效。
+  LyricFillStyle _fillStyle = LyricFillStyle.lineUniform;
+  // 「渐变赋色」过曝轨迹的取色混白比例（默认 0.5，范围正中）
+  double _gradientFillRatio = defaultGradientFillRatio;
   // 屏蔽歌词作者信息（默认关闭，对齐 EchoMusic lyricFilterEnabled）：
   // 开启后显示面剔除作词/作曲/编曲等制作名单与版权声明行，只留纯歌词。
   bool _hideLyricCredits = false;
@@ -928,6 +970,24 @@ class LyricPreferences extends ChangeNotifier {
   bool get staggerFromCurrentLine => _staggerFromCurrentLine;
   LyricFillMode get fillMode => _fillMode;
 
+  /// 动态颜色赋色方式（默认 [LyricFillStyle.lineUniform]）。
+  ///
+  /// 仅在「歌词动态颜色」开启且为 AM 播放页时由设置页展示下拉；
+  /// [LyricFillStyle.wordGradient] 时当前行字内渐变直接用**未经混色的
+  /// 封面取色**过渡到纯白（不随混色比例改变）；
+  /// [LyricFillStyle.backgroundBloom]（背景增透）时条带取色源改为当前行
+  /// 背后的实拍背景色（提亮加饱和后供过曝曲线），见
+  /// `lib/widgets/apple_lyrics/utils/lyric_bg_bloom.dart`。
+  LyricFillStyle get fillStyle => _fillStyle;
+
+  /// 「渐变赋色」过曝轨迹的取色混白比例（范围 [minGradientFillRatio]~
+  /// [maxGradientFillRatio]，默认 0.5）。
+  ///
+  /// 过曝曲线（扫光带内封色→白）里"取色"的浓度：100% = 完全原取色，
+  /// 50% = 取色与白各半，0% = 不取色（过曝光斑纯白）。未播区不受它影响
+  /// ——那里保持原有混色。
+  double get gradientFillRatio => _gradientFillRatio;
+
   /// 屏蔽歌词作者信息是否开启（默认关闭）。
   ///
   /// 开启后各歌词显示面（播放页 / 桌面悬浮窗 / 锁屏 / 车机）按
@@ -966,17 +1026,17 @@ class LyricPreferences extends ChangeNotifier {
   /// 自定义字体（[LyricFontSource.custom]）是否加载成功。
   ///
   /// 面板提示「已应用自定义字体 / 字体加载失败」必须用它：
-  /// [effectiveFontFamily] 在 Windows 的 system 档也非 null（内置思源黑体），
+  /// [effectiveFontFamily] 在 Windows 的 system 档也非 null（内置 MD3MusicSans 字体），
   /// 用它判断会把「回落到默认字体」误报成「自定义字体已生效」。
   bool get customFontLoaded => _loadedCustomFontFamily != null;
 
   /// 当前生效的 fontFamily（传给 TextPainter 的 TextStyle）：
-  /// - [LyricFontSource.system]：Windows 返回内置思源黑体（与全局 UI 同族，
+  /// - [LyricFontSource.system]：Windows 返回内置 MD3MusicSans 字体（与全局 UI 同族，
   ///   否则「还原所有设置」后歌词会掉到引擎兜底字形）；其他平台返回 null，
   ///   让 Flutter 走系统字体链
   /// - [LyricFontSource.bundled]：已废弃（内置 SimHei 已移除），等同 system
   /// - [LyricFontSource.custom]：返回 [_loadedCustomFontFamily]，
-  ///   加载失败时降级为对应平台默认字体（Windows = 内置思源黑体）
+  ///   加载失败时降级为对应平台默认字体（Windows = 内置 MD3MusicSans 字体）
   String? get effectiveFontFamily {
     switch (_fontSource) {
       case LyricFontSource.system:
@@ -1110,6 +1170,11 @@ class LyricPreferences extends ChangeNotifier {
         prefs.getBool(_keyStaggerFromCurrentLine) ??
             defaultStaggerFromCurrentLine;
     _fillMode = _fillModeFromName(prefs.getString(_keyFillMode));
+    _fillStyle = _fillStyleFromName(prefs.getString(_keyFillStyle));
+    _gradientFillRatio =
+        (prefs.getDouble(_keyGradientFillRatio) ??
+                defaultGradientFillRatio)
+            .clamp(minGradientFillRatio, maxGradientFillRatio);
     _hideLyricCredits = prefs.getBool(_keyHideLyricCredits) ?? false;
     _creditPattern = prefs.getString(_keyCreditPattern) ?? '';
     _interludeDotsStartX =
@@ -1544,6 +1609,35 @@ class LyricPreferences extends ChangeNotifier {
     await prefs.setString(_keyFillMode, mode.name);
   }
 
+  /// 设置动态颜色赋色方式（整行赋色 / 渐变赋色）并持久化。
+  ///
+  /// 同值早退（不重复落盘 / 通知）；切换后由 AppleLyricsView 的
+  /// LyricPreferences 监听触发重绘，下一帧即生效。
+  Future<void> setFillStyle(LyricFillStyle style) async {
+    if (_fillStyle == style) return;
+    _fillStyle = style;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyFillStyle, style.name);
+  }
+
+  /// 设置「渐变赋色」的取色混白比例并持久化。
+  ///
+  /// 范围 [minGradientFillRatio]~[maxGradientFillRatio]（0~1），同值早退；
+  /// 比例变化由已订阅 LyricPreferences 的歌词视图下一帧生效。
+  Future<void> setGradientFillRatio(double ratio) async {
+    final clamped =
+        ratio.clamp(minGradientFillRatio, maxGradientFillRatio);
+    if (clamped == _gradientFillRatio) return;
+    _gradientFillRatio = clamped;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(
+      _keyGradientFillRatio,
+      _gradientFillRatio,
+    );
+  }
+
   /// 设置歌词翻译副行显示开关并持久化。
   Future<void> setShowTranslation(bool enabled) async {
     if (_showTranslation == enabled) return;
@@ -1897,6 +1991,19 @@ class LyricPreferences extends ChangeNotifier {
     return name == 'classic' ? LyricFillMode.classic : LyricFillMode.sweep;
   }
 
+  /// 仅精确串命中：'wordGradient' / 'backgroundBloom'；
+  /// 其余（含 null / 未知值）→ lineUniform（默认）。
+  static LyricFillStyle _fillStyleFromName(String? name) {
+    switch (name) {
+      case 'wordGradient':
+        return LyricFillStyle.wordGradient;
+      case 'backgroundBloom':
+        return LyricFillStyle.backgroundBloom;
+      default:
+        return LyricFillStyle.lineUniform;
+    }
+  }
+
   /// 仅 'adaptive' → [GlowThresholdMode.adaptive]，其余（含 null / 未知值）→ fixed（默认）。
   static GlowThresholdMode _glowThresholdModeFromName(String? name) {
     return name == 'adaptive'
@@ -1945,6 +2052,8 @@ class LyricPreferences extends ChangeNotifier {
     _liftHeightPx = defaultLiftHeightPxForCurrentPlatform;
     _staggerFromCurrentLine = defaultStaggerFromCurrentLine;
     _fillMode = LyricFillMode.sweep;
+    _fillStyle = LyricFillStyle.lineUniform;
+    _gradientFillRatio = defaultGradientFillRatio;
     _hideLyricCredits = false;
     _creditPattern = '';
     _interludeDotsStartX = defaultInterludeDotsStartXForCurrentPlatform;
@@ -1989,6 +2098,8 @@ class LyricPreferences extends ChangeNotifier {
     await prefs.remove(_keyLiftHeightPx);
     await prefs.remove(_keyStaggerFromCurrentLine);
     await prefs.remove(_keyFillMode);
+    await prefs.remove(_keyFillStyle);
+    await prefs.remove(_keyGradientFillRatio);
     await prefs.remove(_keyHideLyricCredits);
     await prefs.remove(_keyCreditPattern);
     await prefs.remove(_keyInterludeDotsStartX);

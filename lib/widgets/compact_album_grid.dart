@@ -19,6 +19,8 @@ class CompactAlbumGrid extends StatelessWidget {
     required this.regionKey,
     this.heroTags,
     this.maxItems = 6,
+    this.columns,
+    this.favoriteBuilder,
   });
 
   final List<Album> albums;
@@ -31,6 +33,19 @@ class CompactAlbumGrid extends StatelessWidget {
   /// 与对应完整列表页卡片的 tag 同口径，区块 → 完整列表的推入也靠它衔接。
   final List<String?>? heroTags;
 
+  /// 强制列数（null = 按面板局部宽度自适应）。
+  ///
+  /// 用于「必须 N 行」的场景：发现页「新碟上架」与新歌速递在宽屏并排，
+  /// 新歌固定 4 行，新碟如果按宽度自适应成 2 列，就只排 2 行、右侧空掉一截，
+  /// 两栏参差不齐。传 1 让它单列 4 行，与邻居等高。
+  final int? columns;
+
+  /// 行尾附加控件（可选）。返回 null 或长度 0 时不占位。
+  ///
+  /// 用于在专辑行右侧放「收藏」等操作。只由宿主提供，组件本身不认识
+  /// 收藏语义（发现页与探索页的可收藏条件不同）。
+  final Widget? Function(BuildContext context, Album album)? favoriteBuilder;
+
   /// tv: 焦点区域记忆键，同一组件在三处调用点各用一把（同一 memoryKey
   /// 会被 dpad 视为同一个区域，离开再回来会串到别的面板位置）。
   final String regionKey;
@@ -39,12 +54,13 @@ class CompactAlbumGrid extends StatelessWidget {
   Widget build(BuildContext context) {
     final count = albums.length < maxItems ? albums.length : maxItems;
     // 计划 4.7：按面板局部宽度定列数——桌面宽面板多列，手机仍两列。
+    // [columns] 非空时以调用方指定为准（见其文档）。
     return LayoutBuilder(
       builder: (context, c) {
-        final columns = gridColumnsForWidth(c.maxWidth,
-                targetExtent: 280, min: c.maxWidth < 360 ? 1 : 2, max: 4,
-        )
-            ;
+        final columns = this.columns ??
+            gridColumnsForWidth(c.maxWidth,
+              targetExtent: 280, min: c.maxWidth < 360 ? 1 : 2, max: 4,
+            );
         final rows = <Widget>[];
         for (var i = 0; i < count; i += columns) {
           final cells = <Widget>[];
@@ -118,7 +134,7 @@ class CompactAlbumGrid extends StatelessWidget {
                       ),
               ),
             ),
-            const SizedBox(width: 10),
+            const Gap(AppSpacing.md),
             Expanded(
               child: Text(
                 album.name,
@@ -130,6 +146,7 @@ class CompactAlbumGrid extends StatelessWidget {
                     ),
               ),
             ),
+            ?favoriteBuilder?.call(context, album),
           ],
         ),
       ),

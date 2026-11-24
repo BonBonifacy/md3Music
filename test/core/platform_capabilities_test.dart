@@ -232,6 +232,19 @@ void main() {
     });
   });
 
+  group('音效链：Windows 放行真实 DSP', () {
+    test('Windows exposes real audio effect capabilities', () {
+      // flutter test 默认把 defaultTargetPlatform 覆盖成 android，需显式切回 windows
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+      expect(supportsSystemAudioEffects, isTrue);
+      expect(supportsViperMaster, isTrue);
+      // 响度归一没有 Windows 实现，必须继续隐藏
+      expect(supportsLoudnessNormalization, isFalse);
+    });
+  });
+
   group('设置搜索索引不含已隐藏的分类', () {
     // 索引是**编译期**常量（生成器只认 kTvBuild 这类 const 旗标，
     // 看不穿运行时平台判定），故由 `_searchResults` 在运行时按能力过滤。

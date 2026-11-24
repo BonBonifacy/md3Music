@@ -13,6 +13,7 @@ import '../../providers/theme_provider.dart';
 import '../../core/build_flags.dart';
 import '../../core/remote/tv_hint_bar.dart';
 import '../../core/remote/tv_lyrics_focus.dart';
+import '../../core/services/windows_default_font.dart';
 import '../../core/utils/lyric_wrap_plan.dart';
 
 class LyricsView extends StatefulWidget {
@@ -562,17 +563,23 @@ class LyricsViewState extends State<LyricsView> {
     final spacingExtra = fontSize * (_prefs.lineSpacing - wrapHeight);
     _lineSpacingExtra = spacingExtra > 0 ? spacingExtra : 0.0;
     final bool balanced = _prefs.lineBalance;
+    // Windows 使用内置字体（单档 Medium 500）时，请求字重高于 500 一律回落，
+    // 避免假粗体合成（见 WindowsDefaultFont.bundledAwareFontWeight）。
+    final FontWeight clampedWeight =
+        WindowsDefaultFont.bundledAwareFontWeight(_prefs.fontWeight);
+    final FontWeight clampedOther =
+        WindowsDefaultFont.bundledAwareFontWeight(_prefs.otherFontWeight);
     final TextStyle mainStyle = TextStyle(
       fontSize: fontSize,
       height: wrapHeight,
       // 用当前行字重测量（当前行字重 >= 非当前行，可保证所有行不截断）
-      fontWeight: _prefs.fontWeight,
+      fontWeight: clampedWeight,
       fontFamily: fontFamily,
     );
     final TextStyle auxStyle = TextStyle(
       fontSize: _auxiliaryFontSize(fontSize),
       height: _auxiliaryLineHeight,
-      fontWeight: _prefs.otherFontWeight,
+      fontWeight: clampedOther,
       fontFamily: fontFamily,
     );
     // 平衡开关开启时，把 DP 断点落成硬换行；关闭时保持原文交给 Text 自动换行
@@ -623,7 +630,10 @@ class LyricsViewState extends State<LyricsView> {
             0,
             (sum, m) => sum + m.height,
           ) +
-          _auxiliaryFontSize(fontSize) * 0.25;
+          // 上方间隙（与渲染侧 Padding.top 一致）+ 下方呼吸余量：
+          // 行容器首尾相接，副行底边不补余量就会严丝合缝顶到下一行歌词，
+          // 与 AppleLyricsView 侧修复前的「压行」同源。
+          _auxiliaryFontSize(fontSize) * (0.25 + 0.35);
     }
     _mainHeights = mainHeights;
     _auxHeights = auxHeights;
@@ -880,8 +890,10 @@ class LyricsViewState extends State<LyricsView> {
                           style: DefaultTextStyle.of(context).style.copyWith(
                             fontSize: isCurrent ? fontSize : otherFontSize,
                             fontWeight: isCurrent
-                                ? prefs.fontWeight
-                                : prefs.otherFontWeight,
+                                ? WindowsDefaultFont.bundledAwareFontWeight(
+                                    prefs.fontWeight)
+                                : WindowsDefaultFont.bundledAwareFontWeight(
+                                    prefs.otherFontWeight),
                             fontFamily: fontFamily,
                             color: lyricTextColor == null
                                 ? (isCurrent
@@ -915,7 +927,9 @@ class LyricsViewState extends State<LyricsView> {
                               style: TextStyle(
                                 fontSize: auxiliaryFontSize,
                                 height: _auxiliaryLineHeight,
-                                fontWeight: prefs.otherFontWeight,
+                                fontWeight:
+                                    WindowsDefaultFont.bundledAwareFontWeight(
+                                  prefs.otherFontWeight),
                                 fontFamily: fontFamily,
                                 color: lyricTextColor == null
                                     ? (isCurrent

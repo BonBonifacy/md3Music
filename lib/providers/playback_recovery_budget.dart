@@ -74,18 +74,36 @@ PlaybackRecoveryFailureKind classifyPlaybackRecoveryFailure({
 }
 
 /// 单首歌曲的有限自动恢复预算，避免后台网络故障形成永久重试循环。
+///
+/// 前台与后台使用不同退避节奏：[foregroundBackoff] 更短（默认秒级），用于
+/// 「有网但 API 不通」这类秒级抖动——前台要尽快自愈并保持静默；[backoff]
+/// 保持分钟级长退避，用于 App 挂后台时的兜底续播。
 class PlaybackRecoveryBudget {
   PlaybackRecoveryBudget({
     this.maxAttempts = 3,
-    this.backoff = const [
-      Duration(seconds: 30),
-      Duration(seconds: 60),
-      Duration(seconds: 120),
-    ],
-  });
+    List<Duration>? backoff,
+    List<Duration>? foregroundBackoff,
+  })  : backoff = backoff ?? _kDefaultBackoff,
+        // 未单独指定时前台与后台同节奏（显式注入预算的调用方/测试不受影响）。
+        foregroundBackoff =
+            foregroundBackoff ?? backoff ?? _kDefaultForegroundBackoff;
+
+  static const List<Duration> _kDefaultBackoff = [
+    Duration(seconds: 30),
+    Duration(seconds: 60),
+    Duration(seconds: 120),
+  ];
+
+  static const List<Duration> _kDefaultForegroundBackoff = [
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 4),
+    Duration(seconds: 8),
+  ];
 
   final int maxAttempts;
   final List<Duration> backoff;
+  final List<Duration> foregroundBackoff;
   String? _songId;
   int _attempts = 0;
 
@@ -99,11 +117,14 @@ class PlaybackRecoveryBudget {
     return true;
   }
 
-  /// 失败后下次后台重试等待时间；耗尽后返回null。
-  Duration? get nextDelay {
-    if (_attempts >= maxAttempts || backoff.isEmpty) return null;
-    final index = _attempts.clamp(0, backoff.length - 1);
-    return backoff[index];
+  /// 失败后下次自动重试的等待时间；耗尽后返回null。
+  /// [background] 为 true 时取后台长退避，false 时取前台秒级快速退避。
+  Duration? nextDelay({bool background = true}) {
+    if (_attempts >= maxAttempts) return null;
+    final list = background ? backoff : foregroundBackoff;
+    if (list.isEmpty) return null;
+    final index = _attempts.clamp(0, list.length - 1);
+    return list[index];
   }
 
   void reset([String? songId]) {

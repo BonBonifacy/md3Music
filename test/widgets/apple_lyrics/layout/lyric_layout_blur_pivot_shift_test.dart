@@ -130,13 +130,16 @@ void main() {
       }
     });
 
-    test('auxSubHeight 的间隙项与 auxGap 一致（防止两处口径漂移）', () {
+    test('auxSubHeight 的间隙项 = 上方0.3em + 下方0.3em（合计0.6em）', () {
+      // 上方 0.3em（贴主行）+ 下方 0.3em（副行底与下一行的呼吸余量）。
       for (final double fs in <double>[20, 30, 40]) {
+        final double trans = LyricLayout.translationFontSize(fs);
         final double oneRow = LyricLayout.auxSubHeight(fs, 1);
-        final double rowsPart =
-            LyricLayout.translationFontSize(fs) *
-            LyricLayout.translationLineHeight;
-        expect(oneRow - rowsPart, closeTo(LyricLayout.auxGap(fs), 1e-9));
+        final double rowsPart = trans * LyricLayout.translationLineHeight;
+        expect(
+          oneRow - rowsPart,
+          closeTo(trans * 0.6, 1e-9),
+        );
       }
     });
   });

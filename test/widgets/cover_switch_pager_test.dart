@@ -183,7 +183,7 @@ void main() {
     expect(key.currentState!.progress, closeTo(0, 1e-6));
   });
 
-  testWidgets('没有下一首时越界只做橡皮筋，松手回弹到 0 且不提交', (tester) async {
+  testWidgets('没有下一首时越界仍上报一次提交（供 Toast），画面回弹到 0', (tester) async {
     final key = GlobalKey<CoverSwitchPagerState>();
     final commits = <CoverSwitchIntent>[];
     await tester.pumpWidget(
@@ -206,8 +206,87 @@ void main() {
 
     await gesture.up();
     await tester.pumpAndSettle();
-    expect(commits, isEmpty);
+    // provider 的 next() 负责「已经是最后一首了」Toast，画面仍只回弹、不推进。
+    expect(commits, [CoverSwitchIntent.next]);
     expect(key.currentState!.progress, closeTo(0, 1e-6));
+  });
+
+  testWidgets('边界处中等幅度滑动（100px）也上报：橡皮筋压缩后判据会漏', (tester) async {
+    final key = GlobalKey<CoverSwitchPagerState>();
+    final commits = <CoverSwitchIntent>[];
+    await tester.pumpWidget(
+      _host(
+        key: key,
+        labels: ['A', 'B', 'C'],
+        commits: commits,
+        canGoNext: false,
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(CoverSwitchPager)),
+    );
+    // 100px 真实鼠标滑动：橡皮筋压后约 0.117 页，低于旧的 0.12 阈值 →
+    // 旧判据漏报（真机 Win 端实测症状）。改用原始位移后必须上报。
+    await gesture.moveBy(const Offset(-100, 0));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(commits, [CoverSwitchIntent.next]);
+    expect(key.currentState!.progress, closeTo(0, 1e-6));
+  });
+
+  testWidgets('边界处极轻的越界滑动也上报（方向对即算，设阈值会漏轻滑）', (tester) async {
+    final key = GlobalKey<CoverSwitchPagerState>();
+    final commits = <CoverSwitchIntent>[];
+    await tester.pumpWidget(
+      _host(
+        key: key,
+        labels: ['A', 'B', 'C'],
+        commits: commits,
+        canGoNext: false,
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(CoverSwitchPager)),
+    );
+    // `_onDragEnd` 触发即已越过手势系统 touch slop，20px 也是有效滑动，
+    // 不应再叠像素阈值（真机「轻滑无提示」症状）。
+    await gesture.moveBy(const Offset(-20, 0));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(commits, [CoverSwitchIntent.next]);
+    expect(key.currentState!.progress, closeTo(0, 1e-6));
+  });
+
+  testWidgets('边界处朝内滑动（可翻方向相反）不上报', (tester) async {
+    final key = GlobalKey<CoverSwitchPagerState>();
+    final commits = <CoverSwitchIntent>[];
+    await tester.pumpWidget(
+      _host(
+        key: key,
+        labels: ['A', 'B', 'C'],
+        commits: commits,
+        canGoNext: false,
+        canGoPrevious: false,
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(CoverSwitchPager)),
+    );
+    // 队列只一首：两侧都无邻居。朝右滑（上一首方向）应上报 previous，
+    // 这里验证方向判据严格 —— 反向不会误报成 next。
+    await gesture.moveBy(const Offset(20, 0));
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(commits, [CoverSwitchIntent.previous]);
   });
 
   testWidgets('提交后 provider 始终没换歌 → 守卫超时回弹到 0', (tester) async {

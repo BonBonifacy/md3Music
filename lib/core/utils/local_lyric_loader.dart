@@ -21,12 +21,7 @@ class LocalLyricLoader {
   static String? _activeAsyncReadPath;
   static Future<String?>? _activeAsyncRead;
 
-  /// 仅从音频头部读取元数据的最大字节数。
-  ///
-  /// FLAC 的 VORBIS_COMMENT、MP3 的 ID3v2、MP4 的 ©lyr 均位于文件起始区域，
-  /// 逐块随机读取即可拿到内嵌 LRC。限制头部读取量可避免把整首高码率大文件
-  /// 一次性读入内存（播放大体积内嵌歌词歌曲时可能被系统判定 OOM/无响应而崩溃）。
-  /// 若头部区域内未发现歌词标签，则按"无内嵌歌词"处理，回退到同名歌词文件。
+  /// 需要缓冲完整文件或标签时的读取上限，避免大音频和大封面占用过多内存。
   static const int _maxEmbeddedReadBytes = 16 * 1024 * 1024;
 
   /// 优先使用扫描阶段缓存的歌词（如 SAF `content://`），再按普通本地路径读取。
@@ -82,7 +77,9 @@ class LocalLyricLoader {
       }
     }
 
-    final read = Future<String?>.sync(() => compute(_loadForAudioInIsolate, path));
+    final read = Future<String?>.sync(
+      () => compute(_loadForAudioInIsolate, path),
+    );
     _activeAsyncReadPath = path;
     _activeAsyncRead = read;
     void clearRead() {
@@ -91,6 +88,7 @@ class LocalLyricLoader {
         _activeAsyncRead = null;
       }
     }
+
     // 超时只结束调用方等待，底层 compute 仍运行；完成前不能释放并发闸门。
     read.then<void>((_) => clearRead(), onError: (_, _) => clearRead());
     try {
@@ -107,75 +105,51 @@ class LocalLyricLoader {
   /// （如 TTML XML 声明的 `version="1.0"`）会被截断到第一个 `=`，
   /// 因此 FLAC 内嵌歌词改为手动解析 LYRICS 标签（取第一个 `=` 后完整值）。
   static String? _readEmbeddedLyrics(String filePath) {
-    if (filePath.toLowerCase().endsWith('.mp3')) {
-      final text = _readMp3TextLyrics(filePath);
-      if (text != null && text.isNotEmpty) return text;
-    }
-    if (filePath.toLowerCase().endsWith('.flac')) {
+    final lowerPath = filePath.toLowerCase();
+    final isMp3 = lowerPath.endsWith('.mp3');
+    if (lowerPath.endsWith('.flac')) {
       final flacLyrics = _readFlacLyrics(filePath);
       if (flacLyrics != null && flacLyrics.isNotEmpty) return flacLyrics;
     }
-    String? metadataLyrics;
+    // MP3 的 USLT 自行解析：audio_metadata_reader 1.8.1 取正文时用
+    // `rest.sublist(1, ...)`，会把 LRC 首行的 `[` 一并吞掉，首行变成
+    // `00:26.400]...`，被 LyricParserChain 误判为静态歌词并原样显示时间戳。
+    if (isMp3) {
+      final usltLyrics = _readMp3UsltLyrics(filePath);
+      if (usltLyrics != null && usltLyrics.isNotEmpty) return usltLyrics;
+    }
     try {
       final file = File(filePath);
       if (!file.existsSync()) return null;
-      // 超大文件不做整读（避免主隔离区一次性读入大文件导致 OOM/ANR），
-      // 直接视为无内嵌歌词，回退到同目录同名歌词文件。
-      if (file.lengthSync() > _maxEmbeddedReadBytes) return null;
-      final metadata = readMetadata(file, getImage: false);
-      metadataLyrics = metadata.lyrics;
+      if (file.lengthSync() <= _maxEmbeddedReadBytes) {
+        final lyrics = readMetadata(file, getImage: false).lyrics;
+        if (lyrics != null && lyrics.isNotEmpty) return lyrics;
+      }
     } catch (_) {}
 
-    // 保持现有 USLT / Vorbis / MP4 读取优先级；只有通用元数据读取不到歌词时，
-    // 才补读 MP3 ID3v2 的 SYLT（同步歌词）帧。这样不会改变 AM 现有歌词路径，
-    // 只会让此前读不到的本地内嵌同步歌词多一个普通时间轴文本的兜底来源。
-    final existingLyrics = metadataLyrics;
-    if (existingLyrics != null && existingLyrics.isNotEmpty) {
-      return existingLyrics;
-    }
-    if (filePath.toLowerCase().endsWith('.mp3')) {
-      return _readMp3SyncedLyrics(filePath);
-    }
-    return null;
+    // USLT 和通用元数据优先，SYLT 为 MP3 提供同步歌词回退。
+    return isMp3 ? _readMp3SyncedLyrics(filePath) : null;
   }
 
-  /// Seek over APIC and unrelated frames instead of buffering the whole ID3 tag.
-  static String? _readMp3TextLyrics(String path) {
-    RandomAccessFile? file;
-    try {
-      file=File(path).openSync();final length=file.lengthSync();
-      final head=file.readSync(10);
-      if(head.length!=10 || String.fromCharCodes(head.take(3))!='ID3' || ![3,4].contains(head[3]) || (head[5]&0x80)!=0) return null;
-      final version=head[3], end=10+_readSynchsafeInt(head,6);
-      if(end>length) return null;
-      if((head[5]&0x40)!=0) {
-        final size=file.readSync(4);if(size.length!=4) return null;
-        final skip=version==4?_readSynchsafeInt(size,0):4+_readUint32Be(size,0);
-        if(skip<4 || 10+skip>end) return null;
-        file.setPositionSync(10+skip);
-      }
-      for(var frames=0;frames<16384 && file.positionSync()+10<=end;frames++) {
-        final header=file.readSync(10);if(header.length!=10 || header[0]==0) break;
-        final id=String.fromCharCodes(header.take(4));
-        if(!RegExp(r'^[A-Z0-9]{4}$').hasMatch(id)) return null;
-        final size=version==4?_readSynchsafeInt(header,4):_readUint32Be(header,4);
-        final next=file.positionSync()+size;
-        if(size<=0 || next>end) return null;
-        if(id=='USLT' && size<=1024*1024+4096 && (header[9]&0x0c)==0) {
-          List<int> payload=file.readSync(size);
-          if(version==4 && (header[9]&0x02)!=0) payload=_removeId3Unsynchronization(payload);
-          if(payload.length<5 || payload[0]>3) continue;
-          var start=4;
-          final separator=_findSyltTerminator(payload,start,payload[0]);
-          if(separator<0) continue;
-          start=separator+_syltTerminatorLength(payload[0]);
-          final text=_decodeSyltText(payload,start,payload.length,payload[0]);
-          if(text.trim().isNotEmpty) return text;
-        }
-        file.setPositionSync(next);
-      }
-    } catch (_) {} finally {file?.closeSync();}
-    return null;
+  /// 读取 MP3 ID3v2 USLT（Unsynchronised lyrics/text）帧的完整歌词正文。
+  ///
+  /// 格式：编码(1) + 语言(3) + 内容描述符 + 终止符 + 歌词正文。
+  /// 第三方库在该帧上会吞掉正文首字符，所以这里按规范自行截取。
+  static String? _readMp3UsltLyrics(String filePath) =>
+      _readMp3TagFrame(filePath, 'USLT', _parseUsltPayload);
+
+  /// 解析 USLT 帧载荷，返回完整歌词正文（不做任何截断）。
+  static String? _parseUsltPayload(List<int> payload) {
+    if (payload.length < 5) return null;
+    final encoding = payload[0];
+    if (encoding > 3) return null;
+    // 跳过编码字节与 3 字节语言码后，先读到内容描述符的终止符。
+    final descriptionEnd = _findId3Terminator(payload, 4, encoding);
+    if (descriptionEnd < 0) return null;
+    final textStart = descriptionEnd + _id3TerminatorLength(encoding);
+    if (textStart >= payload.length) return null;
+    final text = _decodeId3Text(payload, textStart, payload.length, encoding);
+    return text.trim().isEmpty ? null : text;
   }
 
   /// 读取 MP3 ID3v2 SYLT（Synchronized lyric/text）帧。
@@ -183,16 +157,26 @@ class LocalLyricLoader {
   /// SYLT 的每条文本都带一个毫秒时间戳，但不同写入器可能按整行或按词写入。
   /// 这里把每条记录转换成普通 LRC 行，目标是保证 MD3/AM 至少能正常显示歌词文本；
   /// 不在本地读取层改变现有 AppleLyricsView 的逐字渲染逻辑。
-  static String? _readMp3SyncedLyrics(String filePath) {
-    RandomAccessFile? rf;
-    try {
-      final file = File(filePath);
-      if (!file.existsSync()) return null;
-      rf = file.openSync();
-      final fileLength = rf.lengthSync();
-      if (fileLength < 10) return null;
+  static String? _readMp3SyncedLyrics(String filePath) =>
+      _readMp3TagFrame(filePath, 'SYLT', _parseSyltPayload);
 
-      final header = rf.readSync(10);
+  static String? _parseSyltPayload(List<int> payload) {
+    final entries = _parseSylt(payload);
+    final lyrics = _formatSyltAsLrc(entries);
+    return lyrics != null && lyrics.isNotEmpty ? lyrics : null;
+  }
+
+  /// 按帧长度跳过封面等无关数据，将匹配 [frameId] 的载荷交给 [parse]。
+  static String? _readMp3TagFrame(
+    String filePath,
+    String frameId,
+    String? Function(List<int> payload) parse,
+  ) {
+    RandomAccessFile? file;
+    try {
+      final input = File(filePath).openSync();
+      file = input;
+      final header = input.readSync(10);
       if (header.length < 10 ||
           header[0] != 0x49 ||
           header[1] != 0x44 ||
@@ -203,49 +187,76 @@ class LocalLyricLoader {
       final version = header[3];
       if (version != 3 && version != 4) return null;
       final tagSize = _readSynchsafeInt(header, 6);
-      if (tagSize <= 0 || tagSize > _maxEmbeddedReadBytes) return null;
-
-      final available = fileLength - 10;
+      final available = input.lengthSync() - 10;
       final readLength = tagSize < available ? tagSize : available;
       if (readLength <= 0) return null;
-      final List<int> tagBytes = rf.readSync(readLength);
-      var tag = tagBytes;
 
-      // ID3 unsynchronisation is applied to the tag payload, so remove it before
-      // reading frame sizes and frame contents.
-      if ((header[5] & 0x80) != 0) {
-        tag = _removeId3Unsynchronization(tag);
+      final tagUnsynchronized = (header[5] & 0x80) != 0;
+      // ID3v2.3 对整个标签应用去同步，须先还原字节才能读取原帧长度。
+      // ID3v2.4 的长度按磁盘上的帧计算，可以直接跳过不需要的数据。
+      List<int>? restoredTag;
+      if (version == 3 && tagUnsynchronized) {
+        if (readLength > _maxEmbeddedReadBytes) return null;
+        restoredTag = _removeId3Unsynchronization(input.readSync(readLength));
+      }
+      final tag = restoredTag;
+      final tagEnd = tag?.length ?? readLength;
+      List<int> readTag(int offset, int length) {
+        if (tag != null) return tag.sublist(offset, offset + length);
+        input.setPositionSync(10 + offset);
+        return input.readSync(length);
       }
 
       var offset = 0;
       if ((header[5] & 0x40) != 0) {
-        final skipped = _skipId3ExtendedHeader(tag, version);
-        if (skipped < 0 || skipped > tag.length) return null;
-        offset = skipped;
+        if (tagEnd < 4) return null;
+        final size = readTag(0, 4);
+        if (size.length != 4) return null;
+        offset = version == 4
+            ? _readSynchsafeInt(size, 0)
+            : 4 + _readUint32Be(size, 0);
+        if (offset < 4 || offset > tagEnd) return null;
       }
 
-      while (offset + 10 <= tag.length) {
-        final frameId = String.fromCharCodes(tag.sublist(offset, offset + 4));
-        if (frameId.codeUnits.every((c) => c == 0)) break;
-
+      for (var frames = 0; frames < 16384 && offset + 10 <= tagEnd; frames++) {
+        final frameHeader = readTag(offset, 10);
+        if (frameHeader.length != 10 || frameHeader[0] == 0) break;
         final frameSize = version == 4
-            ? _readSynchsafeInt(tag, offset + 4)
-            : _readUint32Be(tag, offset + 4);
+            ? _readSynchsafeInt(frameHeader, 4)
+            : _readUint32Be(frameHeader, 4);
         final frameStart = offset + 10;
-        final frameEnd = frameStart + frameSize;
-        if (frameSize <= 0 || frameEnd > tag.length) break;
-
-        if (frameId == 'SYLT') {
-          final entries = _parseSylt(tag.sublist(frameStart, frameEnd));
-          final lyrics = _formatSyltAsLrc(entries);
-          if (lyrics != null && lyrics.isNotEmpty) return lyrics;
+        offset = frameStart + frameSize;
+        if (frameSize <= 0 || offset > tagEnd) break;
+        if (frameSize > _maxEmbeddedReadBytes ||
+            String.fromCharCodes(frameHeader.take(4)) != frameId) {
+          continue;
         }
-        offset = frameEnd;
+
+        final formatFlags = frameHeader[9];
+        final compressedOrEncrypted = version == 4 ? 0x0c : 0xc0;
+        if ((formatFlags & compressedOrEncrypted) != 0) continue;
+
+        var payload = readTag(frameStart, frameSize);
+        if (payload.length != frameSize) break;
+        if (version == 4 && (tagUnsynchronized || (formatFlags & 0x02) != 0)) {
+          payload = _removeId3Unsynchronization(payload);
+        }
+        final groupingFlag = version == 4 ? 0x40 : 0x20;
+        final groupIdLength = (formatFlags & groupingFlag) != 0 ? 1 : 0;
+        final dataLengthIndicator = version == 4 && (formatFlags & 0x01) != 0
+            ? 4
+            : 0;
+        final payloadStart = groupIdLength + dataLengthIndicator;
+        if (payloadStart >= payload.length) continue;
+        final lyrics = parse(
+          payloadStart == 0 ? payload : payload.sublist(payloadStart),
+        );
+        if (lyrics != null && lyrics.isNotEmpty) return lyrics;
       }
     } catch (_) {
       return null;
     } finally {
-      rf?.closeSync();
+      file?.closeSync();
     }
     return null;
   }
@@ -264,15 +275,6 @@ class LocalLyricLoader {
         (bytes[offset + 1] << 16) |
         (bytes[offset + 2] << 8) |
         bytes[offset + 3];
-  }
-
-  static int _skipId3ExtendedHeader(List<int> bytes, int version) {
-    if (bytes.length < 4) return -1;
-    final size = version == 4
-        ? _readSynchsafeInt(bytes, 0)
-        : _readUint32Be(bytes, 0);
-    final total = version == 3 ? size + 4 : size;
-    return total > 0 && total <= bytes.length ? total : -1;
   }
 
   static List<int> _removeId3Unsynchronization(List<int> bytes) {
@@ -295,19 +297,19 @@ class LocalLyricLoader {
     if (payload[4] != 2) return const [];
 
     var offset = 1 + 3 + 1 + 1;
-    final descriptionEnd = _findSyltTerminator(payload, offset, encoding);
+    final descriptionEnd = _findId3Terminator(payload, offset, encoding);
     if (descriptionEnd < 0) return const [];
-    offset = descriptionEnd + _syltTerminatorLength(encoding);
+    offset = descriptionEnd + _id3TerminatorLength(encoding);
 
     final entries = <_SyltEntry>[];
     while (offset < payload.length) {
-      final textEnd = _findSyltTerminator(payload, offset, encoding);
+      final textEnd = _findId3Terminator(payload, offset, encoding);
       if (textEnd < 0 ||
-          textEnd + _syltTerminatorLength(encoding) + 4 > payload.length) {
+          textEnd + _id3TerminatorLength(encoding) + 4 > payload.length) {
         break;
       }
-      final text = _decodeSyltText(payload, offset, textEnd, encoding).trim();
-      offset = textEnd + _syltTerminatorLength(encoding);
+      final text = _decodeId3Text(payload, offset, textEnd, encoding).trim();
+      offset = textEnd + _id3TerminatorLength(encoding);
       final timestamp = _readUint32Be(payload, offset);
       offset += 4;
       if (text.isNotEmpty) entries.add(_SyltEntry(text, timestamp));
@@ -315,11 +317,11 @@ class LocalLyricLoader {
     return entries;
   }
 
-  static int _syltTerminatorLength(int encoding) =>
+  static int _id3TerminatorLength(int encoding) =>
       encoding == 1 || encoding == 2 ? 2 : 1;
 
-  static int _findSyltTerminator(List<int> bytes, int start, int encoding) {
-    final length = _syltTerminatorLength(encoding);
+  static int _findId3Terminator(List<int> bytes, int start, int encoding) {
+    final length = _id3TerminatorLength(encoding);
     if (length == 1) {
       for (var i = start; i < bytes.length; i++) {
         if (bytes[i] == 0) return i;
@@ -332,7 +334,7 @@ class LocalLyricLoader {
     return -1;
   }
 
-  static String _decodeSyltText(
+  static String _decodeId3Text(
     List<int> bytes,
     int start,
     int end,
@@ -404,33 +406,58 @@ class LocalLyricLoader {
   static String? _readFlacLyrics(String filePath) {
     RandomAccessFile? file;
     try {
-      file=File(filePath).openSync();
-      final length=file.lengthSync();
-      if(String.fromCharCodes(file.readSync(4))!='fLaC') return null;
-      int uint32() {final b=file!.readSync(4);if(b.length!=4) throw const FormatException('truncated comment');return ByteData.sublistView(b).getUint32(0,Endian.little);}
-      for(var blocks=0;blocks<4096 && file.positionSync()+4<=length;blocks++) {
-        final h=file.readSync(4);if(h.length!=4) return null;
-        final end=file.positionSync()+(h[1]<<16)+(h[2]<<8)+h[3];
-        if(end>length) return null;
-        if((h[0]&0x7f)==4) {
-          final vendor=uint32();if(file.positionSync()+vendor+4>end) return null;
-          file.setPositionSync(file.positionSync()+vendor);
-          final count=uint32();if(count>1000000) return null;
-          for(var i=0;i<count;i++) {
-            final size=uint32(),next=file.positionSync()+size;
-            if(next>end) return null;
-            if(size<=1024*1024+128) {
-              final comment=utf8.decode(file.readSync(size));final eq=comment.indexOf('=');
-              if(eq>0 && comment.substring(0,eq).toUpperCase()=='LYRICS') return comment.substring(eq+1);
+      final input = File(filePath).openSync();
+      file = input;
+      final fileLength = input.lengthSync();
+      if (String.fromCharCodes(input.readSync(4)) != 'fLaC') return null;
+
+      int readUint32() =>
+          ByteData.sublistView(input.readSync(4)).getUint32(0, Endian.little);
+
+      for (
+        var blocks = 0;
+        blocks < 4096 && input.positionSync() + 4 <= fileLength;
+        blocks++
+      ) {
+        final header = input.readSync(4);
+        if (header.length != 4) return null;
+        final blockLength = (header[1] << 16) | (header[2] << 8) | header[3];
+        final blockEnd = input.positionSync() + blockLength;
+        if (blockEnd > fileLength) return null;
+        if ((header[0] & 0x7f) == 4) {
+          if (blockLength < 8) return null;
+          final vendorLength = readUint32();
+          final vendorEnd = input.positionSync() + vendorLength;
+          if (vendorEnd + 4 > blockEnd) return null;
+          input.setPositionSync(vendorEnd);
+          final count = readUint32();
+          if (count > 1000000) return null;
+          for (var i = 0; i < count; i++) {
+            if (input.positionSync() + 4 > blockEnd) return null;
+            final size = readUint32();
+            final commentEnd = input.positionSync() + size;
+            if (commentEnd > blockEnd) return null;
+            if (size <= 1024 * 1024 + 128) {
+              final comment = utf8.decode(input.readSync(size));
+              final separator = comment.indexOf('=');
+              if (separator > 0 &&
+                  comment.substring(0, separator).toUpperCase() == 'LYRICS') {
+                return comment.substring(separator + 1);
+              }
+            } else {
+              input.setPositionSync(commentEnd);
             }
-            file.setPositionSync(next);
           }
           return null;
         }
-        file.setPositionSync(end);
-        if((h[0]&0x80)!=0) break;
+        if ((header[0] & 0x80) != 0) break;
+        input.setPositionSync(blockEnd);
       }
-    } catch (_) {} finally {file?.closeSync();}
+    } catch (_) {
+      return null;
+    } finally {
+      file?.closeSync();
+    }
     return null;
   }
 
@@ -445,8 +472,7 @@ class LocalLyricLoader {
       final stem = dot > 0 ? baseName.substring(0, dot) : baseName;
 
       for (final ext in lyricExtensions) {
-        final candidate =
-            File('${dir.path}${Platform.pathSeparator}$stem$ext');
+        final candidate = File('${dir.path}${Platform.pathSeparator}$stem$ext');
         if (candidate.existsSync()) {
           return candidate.readAsStringSync();
         }
@@ -457,7 +483,8 @@ class LocalLyricLoader {
 }
 
 /// compute isolate 的工作函数：在后台 isolate 中同步执行完整歌词加载。
-String? _loadForAudioInIsolate(String path) => LocalLyricLoader.loadForAudio(path);
+String? _loadForAudioInIsolate(String path) =>
+    LocalLyricLoader.loadForAudio(path);
 
 class _SyltEntry {
   final String text;

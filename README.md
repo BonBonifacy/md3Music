@@ -1,17 +1,15 @@
 # MD3Music
 
 <div align="center">
-
-<img src="assets/images/app_icon.png" width="128" alt="MD3Music 应用图标" />
+<img src="assets/images/app_icon.webp" width="128" alt="MD3Music 应用图标" />
 
 <p><strong>A modern Material 3 music player built with Flutter &amp; Rust.</strong><br />
 支持 Android、Windows 与 Android TV 的 Material 3 / Apple Music 风格音乐播放器。</p>
 
-[![Flutter](https://img.shields.io/badge/Flutter-3.47.0+-02569B?logo=flutter)](https://flutter.dev)
-[![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Windows%20%7C%20TV-green)](https://github.com/zzyoxml/md3Music/releases)
-[![License](https://img.shields.io/badge/License-AGPL--3.0-blue)](LICENSE)
+[![Flutter](https://img.shields.io/badge/Flutter-3.47.0+-02569B?logo=flutter)](https://flutter.dev) [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Windows%20%7C%20TV-green)](https://github.com/zzyoxml/md3Music/releases) [![License](https://img.shields.io/badge/License-AGPL--3.0-blue)](LICENSE)
 
 <p>
+  <a href="https://musicplayer.ccwu.cc/">官网</a> ·
   <a href="https://github.com/zzyoxml/md3Music/releases">下载最新版</a> ·
   <a href="#-功能特性">功能特性</a> ·
   <a href="#-快速开始">构建指南</a> ·
@@ -35,7 +33,9 @@ MD3Music 是一款基于酷狗音乐 API 的 Flutter 音乐播放器，内置嵌
 >
 > **投屏功能声明**：投屏采用行业标准的通用传输协议（DLNA/AirPlay），仅用于在个人家庭网络内将音乐流转至用户本人合法拥有的播放设备，不涉及对音乐文件的再存储、分发或向公众传播。
 >
-> 请勿用于公共场所播放或多人同步观看场景，否则由此引发的一切法律责任由使用者自行承担。
+> 此分支支持在应用内下载歌曲，文件保存在用户设备上。保存位置和标签格式见「下载与内嵌标签」。
+>
+> 请勿用于公共场所播放或多人同步观看场景，以及随意魔改收费，否则由此引发的一切法律责任由使用者/修改者 自行承担。
 
 ***
 ## 🏆 Trendshift Achievements
@@ -83,7 +83,7 @@ MD3Music 是一款基于酷狗音乐 API 的 Flutter 音乐播放器，内置嵌
 
 歌曲文件默认命名为 `歌手-歌名.mp3` / `歌手-歌名.flac`；非法文件名字符替换为下划线，同名文件另加任务后缀，保留已有文件。Android 默认保存到共享音乐库 `Music/MD3Music`，也可选择有写入授权的 SAF 目录。队列默认最多 3 个下载、1 个标签写入；应用重启后显示已中断任务，点击继续即可恢复。系统杀进程后的持续后台下载暂未实现。
 
-MP3/FLAC 默认写入歌名、歌手、专辑、真实曲序/碟号、发行日期、流派、作曲者、作词者和最高可用清晰度封面。封面比较实际尺寸，保留 JPEG/PNG 原始字节；超出资源或容器上限会明确提示。KRC 逐字歌词转换为保留词起止时间的增强 LRC，MP3 写入 USLT，FLAC 写入 LYRICS，优先兼容 ESLyric。源数据缺失、仅有逐行歌词或标签写入失败时，下载管理会单独显示“音频已下载，标签未完成”，允许重试标签并另存文件。ESLyric 的真实播放器高亮及 Android SAF/MediaStore 故障恢复仍需设备验收，详见 [实施计划](ARCHITECT_PLAN.md)。
+MP3/FLAC 默认写入歌名、歌手、专辑、真实曲序/碟号、发行日期、流派、作曲者、作词者和最高可用清晰度封面。封面比较实际尺寸，保留 JPEG/PNG 原始字节；超出资源或容器上限会明确提示。KRC 逐字歌词转换为保留词起止时间的增强 LRC，MP3 写入 USLT，FLAC 写入 LYRICS，优先兼容 ESLyric。源数据缺失、仅有逐行歌词或标签写入失败时，下载管理会单独显示“音频已下载，标签未完成”，允许重试标签并另存文件。ESLyric 的真实播放器高亮及 Android SAF/MediaStore 故障恢复仍需设备验收，详见 [下载实施计划](ARCHITECT_PLAN.downloads.md)。
 
 只接受正常完整音源；试听或权限不足不会算完整下载。原始音频先做容器、时长、长度和摘要核验，写标签使用暂存副本，最终发布后加入本地曲库。成品不写入或保留 `comment`：清除 MP3 的 COMM、自定义 COMMENT 以及次级 ID3v1/APE 备注，FLAC 同时清除 COMMENT/DESCRIPTION 备注；封面、歌词和其它信息保留。完整标签写入失败时，先单独清理备注；无法确认无备注的文件不会发布。Rust 写入没有公开 HTTP 路由，也不接受任意文件路径或标签帧名。
 
@@ -145,9 +145,10 @@ MP3/FLAC 默认写入歌名、歌手、专辑、真实曲序/碟号、发行日�
 
 <p align="center">
   <img src="img/phone/other/Screenshot_2026-08-31-23-47-10-817_com.md3music.md3music-edit.png" width="220" alt="手机更多界面 1" />
-  <img src="img/phone/other/Screenshot_2026-08-31-23-45-31-324_com.md3music.md3music-edit.png" width="220" alt="手机更多界面 2" />
-  <img src="img/phone/other/Screenshot_2026-08-31-23-45-14-931_com.md3music.md3music-edit.png" width="220" alt="手机更多界面 3" />
+  <img src="img/phone/other/Screenshot_2026-08-31-23-45-14-931_com.md3music.md3music-edit.png" width="220" alt="手机更多界面 2" />
+  <img src="img/phone/other/Screenshot_2026-08-31-23-45-31-324_com.md3music.md3music-edit.png" width="220" alt="手机更多界面 3" />
 </p>
+
 
 <p align="center">
   <img src="img/phone/other/Screenshot_2026-08-31-23-44-24-306_com.md3music.md3music.jpg" width="600" alt="手机更多界面 4" />
@@ -402,6 +403,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\tasks\windows.ps1
 
 脚本会构建 Rust 桌面版 `kugou_server.dll`、Flutter Windows 应用并打包 VC++ 运行库，产物为 `build\windows\md3music-windows-<版本>.zip`。解压后运行 `md3music.exe` 即可。Android 专属功能（如 USB 独占输出、主屏小组件）在 Windows 上不可用，属预期。默认产物不含 3D 封面（`kDepthCoverAvailable` 为 false）；需要时加 `-With3D`，脚本会按固定版本下载 ONNX Runtime 运行时并把深度模型一起打进包里。
 
+**Q: 下一曲频繁切歌提示只能看MV，或者播放只有1min内有声音**
+A: 登录过期或者没有签到成功会员
+
 **Q: 应用启动后无法搜索或播放音乐？**
 
 A: 检查日志确认 Rust 服务器是否成功启动。在 Android Studio Logcat 中搜索 `KugouApiService` 查看启动日志。
@@ -421,9 +425,6 @@ A: Rust 的 TLS 依赖（`ring` crate）需要交叉编译为 Android 平台的 
 **Q: 设置里找不到「状态栏歌词」开关？**
 
 A: 该开关仅在魅族 Flyme 机型上出现（由设备能力探测决定），其他品牌不显示。
-
-**Q: 切歌提示只能看MV**
-A: 登录过期或者没有登录
 
 <a id="sponsor"></a>
 
